@@ -13,6 +13,13 @@ import AudioToolbox
 #if os(macOS)
 import AppKit
 #endif
+import SceneKit
+import AVFoundation
+import AudioToolbox
+
+#if os(macOS)
+import AppKit
+#endif
 
 struct ContentView: View {
     @State private var atoms: [Atom] = []
