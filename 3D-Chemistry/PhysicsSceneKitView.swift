@@ -15,8 +15,11 @@ struct PhysicsSceneKitView: NSViewRepresentable {
     var manualBonds: [ManualBond]
     var selectedHole: (atomIndex: Int, holeIndex: Int)?
     var physicsEnabled: Bool
+    var cameraPosition: SCNVector3
+    var cameraRotation: SCNVector3
     var onAtomLongPress: ((Int, CGPoint, SCNVector3) -> Void)?
     var onHoleTap: ((Int, Int) -> Void)?
+    var onResetCamera: (() -> Void)?
 
     func makeNSView(context: Context) -> SCNView {
         let view = SCNView()
@@ -26,7 +29,8 @@ struct PhysicsSceneKitView: NSViewRepresentable {
         view.scene = scene
         context.coordinator.physicsManager = manager
         
-        view.allowsCameraControl = true
+        // 禁用自动相机控制，改用滑动条
+        view.allowsCameraControl = false
         view.autoenablesDefaultLighting = true
         view.backgroundColor = .black
         
@@ -44,7 +48,7 @@ struct PhysicsSceneKitView: NSViewRepresentable {
         clickGesture.delegate = context.coordinator
         view.addGestureRecognizer(clickGesture)
         
-        // 添加拖拽手势
+        // 添加拖拽手势（用于拖动原子）
         let panGesture = NSPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePan(_:)))
         panGesture.delegate = context.coordinator
         view.addGestureRecognizer(panGesture)
@@ -55,10 +59,23 @@ struct PhysicsSceneKitView: NSViewRepresentable {
         longPressGesture.delegate = context.coordinator
         view.addGestureRecognizer(longPressGesture)
         
+        // 添加双击手势（重置相机）
+        let doubleTapGesture = NSClickGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleDoubleTap(_:)))
+        doubleTapGesture.numberOfClicksRequired = 2
+        doubleTapGesture.delegate = context.coordinator
+        view.addGestureRecognizer(doubleTapGesture)
+        
         context.coordinator.sceneView = view
         context.coordinator.onAtomLongPress = onAtomLongPress
         context.coordinator.onHoleTap = onHoleTap
+        context.coordinator.onResetCamera = onResetCamera
         context.coordinator.physicsEnabled = physicsEnabled
+        
+        // 设置初始相机位置
+        if let camera = view.pointOfView {
+            camera.position = cameraPosition
+            camera.eulerAngles = cameraRotation
+        }
         
         return view
     }
@@ -114,7 +131,14 @@ struct PhysicsSceneKitView: NSViewRepresentable {
         context.coordinator.sceneView = nsView
         context.coordinator.onAtomLongPress = onAtomLongPress
         context.coordinator.onHoleTap = onHoleTap
+        context.coordinator.onResetCamera = onResetCamera
         context.coordinator.physicsEnabled = physicsEnabled
+        
+        // 更新相机位置和旋转
+        if let camera = nsView.pointOfView {
+            camera.position = cameraPosition
+            camera.eulerAngles = cameraRotation
+        }
         
         // 更新物理模拟状态
         nsView.isPlaying = physicsEnabled
@@ -143,6 +167,7 @@ struct PhysicsSceneKitView: NSViewRepresentable {
         var dragPlanePosition: SCNVector3?
         var onAtomLongPress: ((Int, CGPoint, SCNVector3) -> Void)?
         var onHoleTap: ((Int, Int) -> Void)?
+        var onResetCamera: (() -> Void)?
         var lastAtoms: [Atom] = []
         var lastManualBonds: [ManualBond] = []
         var lastSelectedHole: (atomIndex: Int, holeIndex: Int)?
@@ -159,7 +184,26 @@ struct PhysicsSceneKitView: NSViewRepresentable {
         
         // MARK: - 手势识别
         
+        func gestureRecognizer(_ gestureRecognizer: NSGestureRecognizer, shouldRequireFailureOf otherGestureRecognizer: NSGestureRecognizer) -> Bool {
+            // 单击需要等待双击失败
+            if gestureRecognizer is NSClickGestureRecognizer && otherGestureRecognizer is NSClickGestureRecognizer {
+                if let click = gestureRecognizer as? NSClickGestureRecognizer,
+                   let doubleClick = otherGestureRecognizer as? NSClickGestureRecognizer {
+                    if click.numberOfClicksRequired == 1 && doubleClick.numberOfClicksRequired == 2 {
+                        return true
+                    }
+                }
+            }
+            return false
+        }
+        
         func gestureRecognizerShouldBegin(_ gestureRecognizer: NSGestureRecognizer) -> Bool {
+            // 双击手势始终允许
+            if let clickGesture = gestureRecognizer as? NSClickGestureRecognizer,
+               clickGesture.numberOfClicksRequired == 2 {
+                return true
+            }
+            
             if gestureRecognizer is NSClickGestureRecognizer {
                 return true
             }
@@ -168,6 +212,11 @@ struct PhysicsSceneKitView: NSViewRepresentable {
             let location = gestureRecognizer.location(in: view)
             let hitResults = view.hitTest(location, options: [:])
             return hitResults.contains(where: { $0.node.geometry is SCNSphere && $0.node.name?.starts(with: "hole_") != true })
+        }
+        
+        @objc func handleDoubleTap(_ gesture: NSClickGestureRecognizer) {
+            // 双击重置相机
+            onResetCamera?()
         }
         
         @objc func handleClick(_ gesture: NSClickGestureRecognizer) {
@@ -299,8 +348,11 @@ struct PhysicsSceneKitView: UIViewRepresentable {
     var manualBonds: [ManualBond]
     var selectedHole: (atomIndex: Int, holeIndex: Int)?
     var physicsEnabled: Bool
+    var cameraPosition: SCNVector3
+    var cameraRotation: SCNVector3
     var onAtomLongPress: ((Int, CGPoint, SCNVector3) -> Void)?
     var onHoleTap: ((Int, Int) -> Void)?
+    var onResetCamera: (() -> Void)?
 
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView()
@@ -309,7 +361,8 @@ struct PhysicsSceneKitView: UIViewRepresentable {
         view.scene = scene
         context.coordinator.physicsManager = manager
         
-        view.allowsCameraControl = true
+        // 禁用自动相机控制，改用滑动条
+        view.allowsCameraControl = false
         view.autoenablesDefaultLighting = true
         view.backgroundColor = .black
         
@@ -334,10 +387,26 @@ struct PhysicsSceneKitView: UIViewRepresentable {
         longPressGesture.delegate = context.coordinator
         view.addGestureRecognizer(longPressGesture)
         
+        // 添加双击手势（重置相机）
+        let doubleTapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleDoubleTap(_:)))
+        doubleTapGesture.numberOfTapsRequired = 2
+        doubleTapGesture.delegate = context.coordinator
+        view.addGestureRecognizer(doubleTapGesture)
+        
+        // 单击需要等待双击失败
+        tapGesture.require(toFail: doubleTapGesture)
+        
         context.coordinator.sceneView = view
         context.coordinator.onAtomLongPress = onAtomLongPress
         context.coordinator.onHoleTap = onHoleTap
+        context.coordinator.onResetCamera = onResetCamera
         context.coordinator.physicsEnabled = physicsEnabled
+        
+        // 设置初始相机位置
+        if let camera = view.pointOfView {
+            camera.position = cameraPosition
+            camera.eulerAngles = cameraRotation
+        }
         
         return view
     }
@@ -389,7 +458,14 @@ struct PhysicsSceneKitView: UIViewRepresentable {
         context.coordinator.sceneView = uiView
         context.coordinator.onAtomLongPress = onAtomLongPress
         context.coordinator.onHoleTap = onHoleTap
+        context.coordinator.onResetCamera = onResetCamera
         context.coordinator.physicsEnabled = physicsEnabled
+        
+        // 更新相机位置和旋转
+        if let camera = uiView.pointOfView {
+            camera.position = cameraPosition
+            camera.eulerAngles = cameraRotation
+        }
         
         uiView.isPlaying = physicsEnabled
     }
@@ -417,6 +493,7 @@ struct PhysicsSceneKitView: UIViewRepresentable {
         var dragPlanePosition: SCNVector3?
         var onAtomLongPress: ((Int, CGPoint, SCNVector3) -> Void)?
         var onHoleTap: ((Int, Int) -> Void)?
+        var onResetCamera: (() -> Void)?
         var lastAtoms: [Atom] = []
         var lastManualBonds: [ManualBond] = []
         var lastSelectedHole: (atomIndex: Int, holeIndex: Int)?
@@ -428,7 +505,26 @@ struct PhysicsSceneKitView: UIViewRepresentable {
             }
         }
         
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRequireFailureOf otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            // 单击需要等待双击失败
+            if gestureRecognizer is UITapGestureRecognizer && otherGestureRecognizer is UITapGestureRecognizer {
+                if let tap = gestureRecognizer as? UITapGestureRecognizer,
+                   let doubleTap = otherGestureRecognizer as? UITapGestureRecognizer {
+                    if tap.numberOfTapsRequired == 1 && doubleTap.numberOfTapsRequired == 2 {
+                        return true
+                    }
+                }
+            }
+            return false
+        }
+        
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            // 双击手势始终允许
+            if let tapGesture = gestureRecognizer as? UITapGestureRecognizer,
+               tapGesture.numberOfTapsRequired == 2 {
+                return true
+            }
+            
             if gestureRecognizer is UITapGestureRecognizer {
                 return true
             }
@@ -437,6 +533,11 @@ struct PhysicsSceneKitView: UIViewRepresentable {
             let location = gestureRecognizer.location(in: view)
             let hitResults = view.hitTest(location, options: [:])
             return hitResults.contains(where: { $0.node.geometry is SCNSphere && $0.node.name?.starts(with: "hole_") != true })
+        }
+        
+        @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
+            // 双击重置相机
+            onResetCamera?()
         }
         
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {

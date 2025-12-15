@@ -29,6 +29,15 @@ struct ContentView: View {
     @State private var selectedAtomIndex: Int?
     @State private var selectedAtomPosition: SCNVector3 = SCNVector3Zero
     @State private var physicsEnabled = true  // 物理引擎开关
+    @State private var showClearConfirmation = false  // 清空确认弹窗
+    @State private var showCameraControls = false  // 相机控制面板开关
+    
+    // 相机位置控制
+    @State private var cameraX: Float = 0.0
+    @State private var cameraY: Float = 0.0
+    @State private var cameraZ: Float = 6.0
+    @State private var cameraRotationX: Float = 0.0
+    @State private var cameraRotationY: Float = 0.0
     
     // 预选原子暂存区
     @State private var stagedAtoms: [String] = []  // 暂存的元素符号列表
@@ -46,11 +55,16 @@ struct ContentView: View {
                 manualBonds: manualBonds,
                 selectedHole: selectedHole,
                 physicsEnabled: physicsEnabled,
+                cameraPosition: SCNVector3(cameraX, cameraY, cameraZ),
+                cameraRotation: SCNVector3(cameraRotationX, cameraRotationY, 0),
                 onAtomLongPress: { index, _, position in
                     handleAtomLongPress(index: index, position3D: position)
                 },
                 onHoleTap: { atomIndex, holeIndex in
                     handleHoleTap(atomIndex: atomIndex, holeIndex: holeIndex)
+                },
+                onResetCamera: {
+                    resetCamera()
                 }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -111,26 +125,44 @@ struct ContentView: View {
             
             // 左右按钮悬浮层
             HStack {
-                // 左侧三角形按钮（物理引擎开关）
-                Button {
-                    handleLeftButton()
-                } label: {
-                    ZStack {
-                        if physicsEnabled {
-                            // 物理引擎开启状态：显示波浪线（表示运动）
-                            PhysicsWaveShape()
-                                .stroke(Color.green, lineWidth: 2.5)
-                                .frame(width: 48, height: 48)
-                        } else {
-                            // 物理引擎关闭状态：显示静止符号
-                            TriangleStrokeShape()
-                                .stroke(Color.white.opacity(0.5), lineWidth: 2.5)
-                                .frame(width: 48, height: 48)
+                // 左侧按钮（点击切换物理引擎，长按清空场景）
+                VStack(spacing: 4) {
+                    Button {
+                        handleLeftButton()
+                    } label: {
+                        ZStack {
+                            if physicsEnabled {
+                                // 物理引擎开启状态：显示波浪线（表示运动）
+                                PhysicsWaveShape()
+                                    .stroke(Color.green, lineWidth: 2.5)
+                                    .frame(width: 48, height: 48)
+                            } else {
+                                // 物理引擎关闭状态：显示静止符号
+                                TriangleStrokeShape()
+                                    .stroke(Color.white.opacity(0.5), lineWidth: 2.5)
+                                    .frame(width: 48, height: 48)
+                            }
                         }
-                    }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .simultaneousGesture(
+                    LongPressGesture(minimumDuration: 0.8)
+                        .onEnded { _ in
+                            if !atoms.isEmpty {
+                                showClearConfirmation = true
+                                soundPlayer.playKnobSound()
+                            }
+                        }
+                )
+                
+                    // 原子数量提示
+                    if !atoms.isEmpty {
+                        Text("\(atoms.count)个原子")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                }
                 .padding(.leading, 32)
                 
                 Spacer()
@@ -174,8 +206,107 @@ struct ContentView: View {
             }
             .padding(.bottom, 40)
             .frame(maxHeight: .infinity, alignment: .bottom)
+            
+            // 相机控制UI
+            if showCameraControls {
+                // 左侧缩放滑动条（垂直）
+                HStack {
+                    CameraZoomSlider(value: $cameraZ, range: 2...15)
+                        .padding(.leading, 16)
+                        .padding(.vertical, 120)
+                    Spacer()
+                }
+                .transition(.move(edge: .leading).combined(with: .opacity))
+                
+                // 底部位置滑动条（水平）
+                VStack {
+                    Spacer()
+                    CameraPositionBar(
+                        cameraX: $cameraX,
+                        cameraY: $cameraY,
+                        onReset: resetCamera
+                    )
+                    .padding(.horizontal, 80)
+                    .padding(.bottom, 100)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            
+            // 右上角视角控制组件
+            VStack {
+                HStack {
+                    Spacer()
+                    VStack(spacing: 12) {
+                        // 相机开关按钮
+                        Button {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                showCameraControls.toggle()
+                            }
+                        } label: {
+                            Image(systemName: showCameraControls ? "video.fill" : "video")
+                                .font(.system(size: 16))
+                                .foregroundColor(showCameraControls ? .cyan : .white.opacity(0.7))
+                                .frame(width: 40, height: 40)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color.black.opacity(0.5))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 12)
+                                                .stroke(showCameraControls ? Color.cyan.opacity(0.5) : Color.white.opacity(0.1), lineWidth: 1)
+                                        )
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        
+                        // 视角控制（展开时显示）
+                        if showCameraControls {
+                            CameraAngleControl(
+                                rotationX: $cameraRotationX,
+                                rotationY: $cameraRotationY
+                            )
+                            .transition(.scale.combined(with: .opacity))
+                        }
+                    }
+                    .padding(.trailing, 16)
+                    .padding(.top, 60)
+                }
+                Spacer()
+            }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.8, blendDuration: 0), value: isAtomSelectorVisible)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showCameraControls)
+        .alert("清空场景", isPresented: $showClearConfirmation) {
+            Button("取消", role: .cancel) { }
+            Button("清空", role: .destructive) {
+                clearScene()
+            }
+        } message: {
+            Text("确定要清空所有原子和化学键吗？此操作无法撤销。")
+        }
+    }
+    
+    /// 清空整个场景
+    private func clearScene() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            atoms.removeAll()
+            manualBonds.removeAll()
+            selectedHole = nil
+            selectedAtomIndex = nil
+            stagedAtoms.removeAll()
+        }
+        soundPlayer.playKnobSound()
+    }
+    
+    /// 重置相机位置
+    private func resetCamera() {
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+            cameraX = 0.0
+            cameraY = 0.0
+            cameraZ = 6.0
+            cameraRotationX = 0.0
+            cameraRotationY = 0.0
+        }
+        soundPlayer.playKnobSound()
     }
     
     private func handleLeftButton() {
@@ -229,6 +360,7 @@ struct ContentView: View {
         case pyramidal           // 三角锥（如 NH₃）
         case tetrahedral         // 四面体（如 CH₄）
         case diatomic            // 双原子分子（如 H₂, O₂, CO）
+        case complex             // 复杂分子（如 H₃PO₄, H₂SO₄）
         case undefined           // 无法预测
     }
     
@@ -243,6 +375,11 @@ struct ContentView: View {
         }
         
         let totalAtoms = elements.count
+        
+        // 双原子分子
+        if totalAtoms == 2 {
+            return .diatomic
+        }
         
         // 特殊分子检测
         // H₂O: 1个O + 2个H
@@ -280,9 +417,10 @@ struct ContentView: View {
             return .linear
         }
         
-        // 双原子分子
-        if totalAtoms == 2 {
-            return .diatomic
+        // 复杂分子检测（原子数 > 5，或有多个非氢原子）
+        let nonHydrogenCount = elements.filter { $0.lowercased() != "h" }.count
+        if totalAtoms > 5 || nonHydrogenCount > 2 {
+            return .complex
         }
         
         // 找到成键能力最高的原子作为中心
@@ -301,7 +439,6 @@ struct ContentView: View {
         let neighborCount = totalAtoms - centerCount
         
         if neighborCount == 2 {
-            // 可能是线性或弯曲
             let centerElement = maxBondAtom.lowercased()
             if centerElement == "o" || centerElement == "s" {
                 return .bent
@@ -317,7 +454,7 @@ struct ContentView: View {
             return .tetrahedral
         }
         
-        return .undefined
+        return .complex
     }
     
     /// 计算原子间应该形成的键级
@@ -387,13 +524,16 @@ struct ContentView: View {
         let nobleGases = atomsWithBondCapacity.filter { $0.maxBonds == 0 }
         
         var newAtoms: [Atom] = []
-        let baseX: Float = Float(atoms.count) * 0.5  // 偏移避免与现有原子重叠
+        // 分子始终生成在原点中心（相机在 Z=6 看向原点）
+        let centerX: Float = 0.0
+        let centerY: Float = 0.0
+        let centerZ: Float = 0.0
         let baseSpacing: Float = 1.0  // 基础原子间距
         
         // 根据几何类型布局
         switch geometry {
         case .diatomic:
-            // 双原子分子：水平排列，考虑键级
+            // 双原子分子：水平排列（沿 X 轴），考虑键级
             let e1 = atomsWithBondCapacity[0].element
             let e2 = atomsWithBondCapacity[1].element
             let v1 = library.getMaxBonds(for: e1)
@@ -404,22 +544,23 @@ struct ContentView: View {
             let bondFactor: Float = bondOrder == 3 ? 0.78 : (bondOrder == 2 ? 0.86 : 1.0)
             let spacing = baseSpacing * bondFactor
             
+            // 居中：两个原子关于原点对称
             newAtoms.append(Atom(
                 element: e1,
-                position: SCNVector3(baseX, 0, 0),
+                position: SCNVector3(centerX - spacing / 2, centerY, centerZ),
                 radius: library.getVisualRadius(for: e1)
             ))
             newAtoms.append(Atom(
                 element: e2,
-                position: SCNVector3(baseX + spacing, 0, 0),
+                position: SCNVector3(centerX + spacing / 2, centerY, centerZ),
                 radius: library.getVisualRadius(for: e2)
             ))
             
         case .linear:
-            // 线性分子（如 CO₂）：中心原子在中间，两个原子在两侧
+            // 线性分子（如 CO₂）：中心原子在原点，两个原子沿 X 轴两侧
             if let center = centerAtoms.first {
                 let centerElement = center.element
-                let centerPos = SCNVector3(baseX, 0, 0)
+                let centerPos = SCNVector3(centerX, centerY, centerZ)
                 
                 // 计算与端基的键级
                 var terminals = terminalAtoms.isEmpty ? 
@@ -458,11 +599,11 @@ struct ContentView: View {
             }
             
         case .bent:
-            // 弯曲分子（如 H₂O）：中心原子在中间，两个氢以 104.5° 角度排列
-            // 在 XZ 平面布局，面向用户（Y轴朝向用户）
+            // 弯曲分子（如 H₂O）：中心原子在原点，两个氢以 104.5° 角度排列
+            // 在 XY 平面布局，V 型开口朝向相机（Z 正方向）
             if let center = centerAtoms.first {
                 let centerElement = center.element
-                let centerPos = SCNVector3(baseX, 0, 0)
+                let centerPos = SCNVector3(centerX, centerY, centerZ)
                 
                 newAtoms.append(Atom(
                     element: centerElement,
@@ -475,16 +616,17 @@ struct ContentView: View {
                 let halfAngle = bondAngle / 2.0
                 let bondLength: Float = baseSpacing * 0.95  // 稍短的键长
                 
-                // 两个氢原子位置（在 XZ 平面，面向用户）
+                // 两个氢原子位置（在 XY 平面，V 型开口朝向相机）
+                // 相机在 Z=6，朝向 Z 负方向看，所以 V 型的开口应该朝 Z 正方向
                 let h1Pos = SCNVector3(
                     centerPos.x + bondLength * sin(halfAngle),
-                    centerPos.y,
-                    centerPos.z - bondLength * cos(halfAngle)
+                    centerPos.y - bondLength * cos(halfAngle),
+                    centerPos.z
                 )
                 let h2Pos = SCNVector3(
                     centerPos.x - bondLength * sin(halfAngle),
-                    centerPos.y,
-                    centerPos.z - bondLength * cos(halfAngle)
+                    centerPos.y - bondLength * cos(halfAngle),
+                    centerPos.z
                 )
                 
                 for (i, terminal) in terminalAtoms.prefix(2).enumerated() {
@@ -498,11 +640,11 @@ struct ContentView: View {
             }
             
         case .trigonalPlanar:
-            // 平面三角形（如 BH₃）：中心原子在中间，三个原子以 120° 角度排列
-            // 在 XZ 平面布局，面向用户
+            // 平面三角形（如 BH₃）：中心原子在原点，三个原子以 120° 角度排列
+            // 在 XY 平面布局，面向相机
             if let center = centerAtoms.first {
                 let centerElement = center.element
-                let centerPos = SCNVector3(baseX, 0, 0)
+                let centerPos = SCNVector3(centerX, centerY, centerZ)
                 
                 newAtoms.append(Atom(
                     element: centerElement,
@@ -512,11 +654,11 @@ struct ContentView: View {
                 
                 let bondLength: Float = baseSpacing
                 for i in 0..<min(3, terminalAtoms.count) {
-                    let angle = Float(i) * 2.0 * .pi / 3.0 + .pi / 2.0  // 从上方开始
+                    let angle = Float(i) * 2.0 * .pi / 3.0 - .pi / 2.0  // 从上方开始
                     let pos = SCNVector3(
-                        centerPos.x + bondLength * sin(angle),
-                        centerPos.y,
-                        centerPos.z - bondLength * cos(angle)
+                        centerPos.x + bondLength * cos(angle),
+                        centerPos.y + bondLength * sin(angle),
+                        centerPos.z
                     )
                     newAtoms.append(Atom(
                         element: terminalAtoms[i].element,
@@ -527,11 +669,11 @@ struct ContentView: View {
             }
             
         case .pyramidal:
-            // 三角锥形（如 NH₃）：中心原子在上方，三个原子在下方
-            // 在 XZ 平面布局，面向用户
+            // 三角锥形（如 NH₃）：中心原子在前方，三个原子在后方形成三角形
+            // 锥尖朝向相机
             if let center = centerAtoms.first {
                 let centerElement = center.element
-                let centerPos = SCNVector3(baseX, 0, 0)
+                let centerPos = SCNVector3(centerX, centerY, centerZ + 0.2)  // 稍微朝前
                 
                 newAtoms.append(Atom(
                     element: centerElement,
@@ -540,16 +682,16 @@ struct ContentView: View {
                 ))
                 
                 let bondLength: Float = baseSpacing * 0.95
-                // NH₃ 键角约 107°，三个氢在下方形成三角形
-                let heightOffset: Float = bondLength * 0.3  // 氢原子在 N 下方
-                let projectedLength: Float = bondLength * 0.9  // 投影到 XZ 平面的长度
+                // NH₃ 键角约 107°，三个氢在后方形成三角形
+                let depthOffset: Float = bondLength * 0.3  // 氢原子在 N 后方（Z 负方向）
+                let projectedLength: Float = bondLength * 0.9  // 投影到 XY 平面的长度
                 
                 for i in 0..<min(3, terminalAtoms.count) {
-                    let angle = Float(i) * 2.0 * .pi / 3.0 + .pi / 6.0  // 30°偏移
+                    let angle = Float(i) * 2.0 * .pi / 3.0 - .pi / 2.0  // 从上方开始
                     let pos = SCNVector3(
-                        centerPos.x + projectedLength * sin(angle),
-                        centerPos.y - heightOffset,
-                        centerPos.z - projectedLength * cos(angle)
+                        centerPos.x + projectedLength * cos(angle),
+                        centerPos.y + projectedLength * sin(angle),
+                        centerPos.z - depthOffset - 0.2
                     )
                     newAtoms.append(Atom(
                         element: terminalAtoms[i].element,
@@ -561,10 +703,10 @@ struct ContentView: View {
             
         case .tetrahedral:
             // 四面体（如 CH₄）
-            // 面向用户的四面体布局
+            // 一个顶点朝向相机的四面体布局
             if let center = centerAtoms.first {
                 let centerElement = center.element
-                let centerPos = SCNVector3(baseX, 0, 0)
+                let centerPos = SCNVector3(centerX, centerY, centerZ)
                 
                 newAtoms.append(Atom(
                     element: centerElement,
@@ -575,16 +717,14 @@ struct ContentView: View {
                 // 四面体顶点位置（正四面体）
                 let bondLength: Float = baseSpacing
                 
-                // 四面体的四个顶点，使一个顶点朝上
-                // 使用标准四面体坐标
+                // 四面体的四个顶点，使一个顶点朝向相机（Z 正方向）
                 let a: Float = bondLength / sqrt(3.0)  // 四面体边长相关参数
-                let h: Float = bondLength * sqrt(2.0/3.0)  // 高度
                 
                 let positions: [SCNVector3] = [
-                    SCNVector3(centerPos.x, centerPos.y + bondLength * 0.8, centerPos.z),  // 上
-                    SCNVector3(centerPos.x + a, centerPos.y - bondLength * 0.3, centerPos.z - a * 0.5),  // 右前
-                    SCNVector3(centerPos.x - a, centerPos.y - bondLength * 0.3, centerPos.z - a * 0.5),  // 左前
-                    SCNVector3(centerPos.x, centerPos.y - bondLength * 0.3, centerPos.z + a)   // 后
+                    SCNVector3(centerPos.x, centerPos.y, centerPos.z + bondLength * 0.8),  // 前（朝向相机）
+                    SCNVector3(centerPos.x + a, centerPos.y - a * 0.5, centerPos.z - bondLength * 0.3),  // 右后下
+                    SCNVector3(centerPos.x - a, centerPos.y - a * 0.5, centerPos.z - bondLength * 0.3),  // 左后下
+                    SCNVector3(centerPos.x, centerPos.y + a, centerPos.z - bondLength * 0.3)   // 后上
                 ]
                 
                 for i in 0..<min(4, terminalAtoms.count) {
@@ -596,80 +736,31 @@ struct ContentView: View {
                 }
             }
             
+        case .complex:
+            // 复杂分子：使用智能分层布局算法
+            // 例如 H₃PO₄: P在中心，4个O围绕P（四面体），3个H各连接到3个O上
+            newAtoms = buildComplexMolecule(
+                allAtoms: atomsWithBondCapacity,
+                library: library,
+                baseSpacing: baseSpacing,
+                center: SCNVector3(centerX, centerY, centerZ)
+            )
+            
         case .undefined:
-            // 未知几何，使用默认布局
-            fallthrough
-        default:
-            // 默认布局：中心原子在中间，端基原子围绕
-            var usedPositions: [SCNVector3] = []
-            var remainingTerminals = terminalAtoms
-            
-            // 放置中心原子
-            for (i, centerAtom) in centerAtoms.enumerated() {
-                let position = SCNVector3(baseX + Float(i) * baseSpacing, 0, 0)
-                newAtoms.append(Atom(
-                    element: centerAtom.element,
-                    position: position,
-                    radius: library.getVisualRadius(for: centerAtom.element)
-                ))
-                usedPositions.append(position)
-            }
-            
-            // 计算剩余成键位置
-            var skeletonBondCounts = Array(repeating: 0, count: centerAtoms.count)
-            for i in 0..<max(0, centerAtoms.count - 1) {
-                skeletonBondCounts[i] += 1
-                skeletonBondCounts[i + 1] += 1
-            }
-            
-            // 分配端基原子
-            var terminalIndex = 0
-            for (skeletonIdx, skeletonAtom) in centerAtoms.enumerated() {
-                let remainingBonds = skeletonAtom.maxBonds - skeletonBondCounts[skeletonIdx]
-                let skeletonPos = usedPositions[skeletonIdx]
-                
-                for bondSlot in 0..<remainingBonds {
-                    guard terminalIndex < remainingTerminals.count else { break }
-                    
-                    let terminal = remainingTerminals[terminalIndex]
-                    let angle = Float(bondSlot + 1) * .pi / Float(remainingBonds + 1)
-                    
-                    let terminalPos = SCNVector3(
-                        skeletonPos.x,
-                        skeletonPos.y + sin(angle) * baseSpacing * 0.8,
-                        skeletonPos.z + cos(angle) * baseSpacing * 0.5
-                    )
-                    
-                    newAtoms.append(Atom(
-                        element: terminal.element,
-                        position: terminalPos,
-                        radius: library.getVisualRadius(for: terminal.element)
-                    ))
-                    terminalIndex += 1
-                }
-            }
-            
-            // 剩余端基原子
-            while terminalIndex < remainingTerminals.count {
-                let terminal = remainingTerminals[terminalIndex]
-                let position = SCNVector3(
-                    baseX + Float(centerAtoms.count + terminalIndex) * baseSpacing,
-                    1.5, 0
-                )
-                newAtoms.append(Atom(
-                    element: terminal.element,
-                    position: position,
-                    radius: library.getVisualRadius(for: terminal.element)
-                ))
-                terminalIndex += 1
-            }
+            // 未知几何，使用复杂分子算法
+            newAtoms = buildComplexMolecule(
+                allAtoms: atomsWithBondCapacity,
+                library: library,
+                baseSpacing: baseSpacing,
+                center: SCNVector3(centerX, centerY, centerZ)
+            )
         }
         
         // 稀有气体放在旁边
         for (i, noble) in nobleGases.enumerated() {
             let position = SCNVector3(
-                baseX + Float(newAtoms.count + i) * baseSpacing,
-                2.0, 0
+                centerX + Float(newAtoms.count + i) * baseSpacing + 2.0,
+                2.0, centerZ
             )
             newAtoms.append(Atom(
                 element: noble.element,
@@ -683,6 +774,268 @@ struct ContentView: View {
         
         // 清空暂存区
         stagedAtoms.removeAll()
+    }
+    
+    /// 构建复杂分子（如 H₃PO₄, H₂SO₄ 等）
+    /// 使用通用的原子放置算法：先放中心原子，然后按成键能力递减放置
+    private func buildComplexMolecule(
+        allAtoms: [(element: String, maxBonds: Int, index: Int)],
+        library: ElementLibrary,
+        baseSpacing: Float,
+        center: SCNVector3
+    ) -> [Atom] {
+        var result: [Atom] = []
+        var placedAtoms: [Int: SCNVector3] = [:]  // index -> position
+        var bondConnections: [Int: [Int]] = [:]  // index -> 连接的原子索引列表
+        
+        // 初始化连接列表
+        for atom in allAtoms {
+            bondConnections[atom.index] = []
+        }
+        
+        // 按成键能力排序
+        let sorted = allAtoms.sorted { $0.maxBonds > $1.maxBonds }
+        
+        guard !sorted.isEmpty else { return result }
+        
+        // 第一步：放置主中心原子
+        let mainCenter = sorted[0]
+        placedAtoms[mainCenter.index] = center
+        result.append(Atom(
+            element: mainCenter.element,
+            position: center,
+            radius: library.getVisualRadius(for: mainCenter.element)
+        ))
+        
+        // 分离不同成键能力的原子
+        var unplacedAtoms = Array(sorted.dropFirst())
+        
+        // 第二步：依次放置剩余原子
+        while !unplacedAtoms.isEmpty {
+            var placedThisRound: [Int] = []
+            
+            for (idx, atom) in unplacedAtoms.enumerated() {
+                // 找到一个已放置的、还有剩余成键位的原子来连接
+                var bestParent: (index: Int, position: SCNVector3, remainingBonds: Int)?
+                
+                for (placedIdx, placedPos) in placedAtoms {
+                    // 计算这个已放置原子还剩多少键位
+                    let placedAtom = allAtoms.first { $0.index == placedIdx }!
+                    let usedBonds = bondConnections[placedIdx]!.count
+                    let remainingBonds = placedAtom.maxBonds - usedBonds
+                    
+                    if remainingBonds > 0 {
+                        // 优先选择剩余键位多的父原子
+                        if bestParent == nil || remainingBonds > bestParent!.remainingBonds {
+                            bestParent = (placedIdx, placedPos, remainingBonds)
+                        }
+                    }
+                }
+                
+                if let parent = bestParent {
+                    // 计算新原子的位置
+                    let parentPos = parent.position
+                    let existingConnections = bondConnections[parent.index]!
+                    let connectionCount = existingConnections.count
+                    
+                    // 根据已有连接数和父原子的总成键能力确定几何
+                    let totalBonds = allAtoms.first { $0.index == parent.index }!.maxBonds
+                    let positions = generateChildPositions(
+                        parentPos: parentPos,
+                        centerPos: center,
+                        existingChildCount: connectionCount,
+                        totalBonds: totalBonds,
+                        radius: baseSpacing
+                    )
+                    
+                    if let newPos = positions.first {
+                        placedAtoms[atom.index] = newPos
+                        result.append(Atom(
+                            element: atom.element,
+                            position: newPos,
+                            radius: library.getVisualRadius(for: atom.element)
+                        ))
+                        
+                        // 建立连接
+                        bondConnections[parent.index]!.append(atom.index)
+                        bondConnections[atom.index]!.append(parent.index)
+                        
+                        placedThisRound.append(idx)
+                    }
+                }
+            }
+            
+            // 移除已放置的原子
+            for idx in placedThisRound.sorted().reversed() {
+                unplacedAtoms.remove(at: idx)
+            }
+            
+            // 如果这一轮没有放置任何原子，说明有问题，强制放置剩余的
+            if placedThisRound.isEmpty && !unplacedAtoms.isEmpty {
+                let atom = unplacedAtoms.removeFirst()
+                let angle = Float(result.count) * Float.pi * 0.4
+                let radius = baseSpacing * 1.5
+                let pos = SCNVector3(
+                    center.x + radius * cos(angle),
+                    center.y + radius * sin(angle),
+                    center.z + 0.5
+                )
+                placedAtoms[atom.index] = pos
+                result.append(Atom(
+                    element: atom.element,
+                    position: pos,
+                    radius: library.getVisualRadius(for: atom.element)
+                ))
+            }
+        }
+        
+        return result
+    }
+    
+    /// 生成子原子位置（考虑已有子原子的位置）
+    private func generateChildPositions(
+        parentPos: SCNVector3,
+        centerPos: SCNVector3,
+        existingChildCount: Int,
+        totalBonds: Int,
+        radius: Float
+    ) -> [SCNVector3] {
+        // 计算父原子相对于中心的方向
+        let toParent = subtractVectors(parentPos, centerPos)
+        let parentDist = sqrt(toParent.x * toParent.x + toParent.y * toParent.y + toParent.z * toParent.z)
+        
+        // 如果父原子就是中心，使用标准方向
+        let baseDirection: SCNVector3
+        if parentDist < 0.001 {
+            baseDirection = SCNVector3(1, 0, 0)
+        } else {
+            baseDirection = normalizeVector(toParent)
+        }
+        
+        // 获取垂直于基础方向的两个方向
+        let perp1 = getPerpendicularVector(to: baseDirection)
+        let perp2 = SCNVector3(
+            baseDirection.y * perp1.z - baseDirection.z * perp1.y,
+            baseDirection.z * perp1.x - baseDirection.x * perp1.z,
+            baseDirection.x * perp1.y - baseDirection.y * perp1.x
+        )
+        
+        var positions: [SCNVector3] = []
+        
+        // 根据已有连接数确定角度偏移
+        let angleOffset = Float(existingChildCount) * Float.pi * 2.0 / Float(max(totalBonds, 3))
+        
+        // 如果父原子不是中心，子原子应该朝向远离中心的方向
+        if parentDist > 0.001 {
+            // 子原子位置：向外延伸，并有一定角度散开
+            let outwardBias: Float = 0.5  // 向外的偏置
+            let spreadAngle = Float.pi / 4.0  // 散开角度
+            
+            let angle = angleOffset + spreadAngle * Float(existingChildCount)
+            let x = parentPos.x + baseDirection.x * radius * outwardBias + 
+                    (perp1.x * cos(angle) + perp2.x * sin(angle)) * radius * 0.7
+            let y = parentPos.y + baseDirection.y * radius * outwardBias + 
+                    (perp1.y * cos(angle) + perp2.y * sin(angle)) * radius * 0.7
+            let z = parentPos.z + baseDirection.z * radius * outwardBias + 
+                    (perp1.z * cos(angle) + perp2.z * sin(angle)) * radius * 0.7
+            
+            positions.append(SCNVector3(x, y, z))
+        } else {
+            // 父原子是中心，使用标准几何位置
+            let standardPositions = generateSurroundingPositions(center: parentPos, count: totalBonds, radius: radius)
+            if existingChildCount < standardPositions.count {
+                positions.append(standardPositions[existingChildCount])
+            }
+        }
+        
+        return positions
+    }
+    
+    /// 生成围绕中心点的位置（四面体/三角锥/平面三角形布局）
+    private func generateSurroundingPositions(center: SCNVector3, count: Int, radius: Float) -> [SCNVector3] {
+        var positions: [SCNVector3] = []
+        
+        switch count {
+        case 1:
+            positions.append(SCNVector3(center.x + radius, center.y, center.z))
+        case 2:
+            // 线性布局
+            positions.append(SCNVector3(center.x + radius, center.y, center.z))
+            positions.append(SCNVector3(center.x - radius, center.y, center.z))
+        case 3:
+            // 三角形布局（XY平面）
+            for i in 0..<3 {
+                let angle = Float(i) * 2.0 * Float.pi / 3.0 - Float.pi / 2.0
+                positions.append(SCNVector3(
+                    center.x + radius * cos(angle),
+                    center.y + radius * sin(angle),
+                    center.z
+                ))
+            }
+        case 4:
+            // 四面体布局
+            let a = radius / sqrt(3.0)
+            positions.append(SCNVector3(center.x, center.y, center.z + radius * 0.8))  // 前
+            positions.append(SCNVector3(center.x + a, center.y - a * 0.5, center.z - radius * 0.3))  // 右后下
+            positions.append(SCNVector3(center.x - a, center.y - a * 0.5, center.z - radius * 0.3))  // 左后下
+            positions.append(SCNVector3(center.x, center.y + a, center.z - radius * 0.3))  // 后上
+        case 5:
+            // 三角双锥布局
+            positions.append(SCNVector3(center.x, center.y + radius, center.z))  // 上
+            positions.append(SCNVector3(center.x, center.y - radius, center.z))  // 下
+            for i in 0..<3 {
+                let angle = Float(i) * 2.0 * Float.pi / 3.0
+                positions.append(SCNVector3(
+                    center.x + radius * cos(angle),
+                    center.y,
+                    center.z + radius * sin(angle)
+                ))
+            }
+        case 6:
+            // 八面体布局
+            positions.append(SCNVector3(center.x + radius, center.y, center.z))
+            positions.append(SCNVector3(center.x - radius, center.y, center.z))
+            positions.append(SCNVector3(center.x, center.y + radius, center.z))
+            positions.append(SCNVector3(center.x, center.y - radius, center.z))
+            positions.append(SCNVector3(center.x, center.y, center.z + radius))
+            positions.append(SCNVector3(center.x, center.y, center.z - radius))
+        default:
+            // 球面均匀分布
+            for i in 0..<count {
+                let phi = Float.pi * (3.0 - sqrt(5.0))  // 黄金角
+                let y = 1.0 - Float(i) / Float(count - 1) * 2.0
+                let radiusAtY = sqrt(1.0 - y * y)
+                let theta = phi * Float(i)
+                positions.append(SCNVector3(
+                    center.x + radius * radiusAtY * cos(theta),
+                    center.y + radius * y,
+                    center.z + radius * radiusAtY * sin(theta)
+                ))
+            }
+        }
+        
+        return positions
+    }
+    
+    /// 向量归一化
+    private func normalizeVector(_ v: SCNVector3) -> SCNVector3 {
+        let len = sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+        guard len > 0.001 else { return SCNVector3(1, 0, 0) }
+        return SCNVector3(v.x / len, v.y / len, v.z / len)
+    }
+    
+    /// 向量减法
+    private func subtractVectors(_ a: SCNVector3, _ b: SCNVector3) -> SCNVector3 {
+        return SCNVector3(a.x - b.x, a.y - b.y, a.z - b.z)
+    }
+    
+    /// 获取垂直向量
+    private func getPerpendicularVector(to v: SCNVector3) -> SCNVector3 {
+        if abs(v.x) < 0.9 {
+            return normalizeVector(SCNVector3(0, -v.z, v.y))
+        } else {
+            return normalizeVector(SCNVector3(-v.y, v.x, 0))
+        }
     }
     
     private func handleAtomLongPress(index: Int, position3D: SCNVector3) {
@@ -1350,6 +1703,258 @@ class SoundPlayer {
         // macOS 使用 NSSound - Tink 音效有机械感
         NSSound(named: "Tink")?.play()
         #endif
+    }
+}
+
+// MARK: - 相机控制面板
+
+// MARK: - 左侧缩放滑动条（垂直）
+struct CameraZoomSlider: View {
+    @Binding var value: Float
+    let range: ClosedRange<Float>
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            // 缩放图标
+            Image(systemName: "minus.magnifyingglass")
+                .font(.system(size: 12))
+                .foregroundColor(.white.opacity(0.5))
+            
+            // 垂直滑动条
+            GeometryReader { geo in
+                ZStack(alignment: .bottom) {
+                    // 背景轨道
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.white.opacity(0.1))
+                        .frame(width: 8)
+                    
+                    // 填充部分（反向：值越小填充越多，因为近距离=放大）
+                    let progress = 1 - CGFloat((value - range.lowerBound) / (range.upperBound - range.lowerBound))
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(
+                            LinearGradient(
+                                colors: [.cyan.opacity(0.8), .cyan.opacity(0.4)],
+                                startPoint: .bottom,
+                                endPoint: .top
+                            )
+                        )
+                        .frame(width: 8, height: geo.size.height * progress)
+                    
+                    // 拖动手柄
+                    Circle()
+                        .fill(Color.cyan)
+                        .frame(width: 20, height: 20)
+                        .shadow(color: .cyan.opacity(0.5), radius: 4)
+                        .offset(y: -geo.size.height * progress + 10)
+                }
+                .frame(maxWidth: .infinity)
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { gesture in
+                            let progress = 1 - min(max(gesture.location.y / geo.size.height, 0), 1)
+                            value = Float(progress) * (range.upperBound - range.lowerBound) + range.lowerBound
+                        }
+                )
+            }
+            
+            // 放大图标
+            Image(systemName: "plus.magnifyingglass")
+                .font(.system(size: 12))
+                .foregroundColor(.white.opacity(0.5))
+            
+            // 数值显示
+            Text(String(format: "%.1f", value))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.cyan.opacity(0.8))
+        }
+        .frame(width: 44)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.black.opacity(0.6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                )
+        )
+    }
+}
+
+// MARK: - 底部位置控制条
+struct CameraPositionBar: View {
+    @Binding var cameraX: Float
+    @Binding var cameraY: Float
+    let onReset: () -> Void
+    
+    var body: some View {
+        HStack(spacing: 16) {
+            // 左右控制
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.5))
+                
+                Slider(value: Binding(
+                    get: { Double(cameraX) },
+                    set: { cameraX = Float($0) }
+                ), in: -10...10)
+                .tint(.cyan)
+                .frame(width: 120)
+            }
+            
+            // 分隔线
+            Rectangle()
+                .fill(Color.white.opacity(0.2))
+                .frame(width: 1, height: 20)
+            
+            // 上下控制
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.5))
+                
+                Slider(value: Binding(
+                    get: { Double(cameraY) },
+                    set: { cameraY = Float($0) }
+                ), in: -10...10)
+                .tint(.cyan)
+                .frame(width: 120)
+            }
+            
+            // 分隔线
+            Rectangle()
+                .fill(Color.white.opacity(0.2))
+                .frame(width: 1, height: 20)
+            
+            // 重置按钮
+            Button(action: onReset) {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 13))
+                    .foregroundColor(.cyan)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(
+            Capsule()
+                .fill(Color.black.opacity(0.7))
+                .overlay(
+                    Capsule()
+                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                )
+        )
+    }
+}
+
+// MARK: - 右上角视角控制组件
+struct CameraAngleControl: View {
+    @Binding var rotationX: Float
+    @Binding var rotationY: Float
+    
+    var body: some View {
+        VStack(spacing: 12) {
+            // 2D摇杆区域
+            ZStack {
+                // 背景圆圈
+                Circle()
+                    .fill(Color.black.opacity(0.5))
+                    .frame(width: 100, height: 100)
+                    .overlay(
+                        Circle()
+                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                    )
+                
+                // 十字参考线
+                Path { path in
+                    path.move(to: CGPoint(x: 50, y: 10))
+                    path.addLine(to: CGPoint(x: 50, y: 90))
+                    path.move(to: CGPoint(x: 10, y: 50))
+                    path.addLine(to: CGPoint(x: 90, y: 50))
+                }
+                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                .frame(width: 100, height: 100)
+                
+                // 方向标签
+                VStack {
+                    Text("俯")
+                        .font(.system(size: 8))
+                        .foregroundColor(.white.opacity(0.3))
+                    Spacer()
+                    Text("仰")
+                        .font(.system(size: 8))
+                        .foregroundColor(.white.opacity(0.3))
+                }
+                .frame(height: 90)
+                
+                HStack {
+                    Text("左")
+                        .font(.system(size: 8))
+                        .foregroundColor(.white.opacity(0.3))
+                    Spacer()
+                    Text("右")
+                        .font(.system(size: 8))
+                        .foregroundColor(.white.opacity(0.3))
+                }
+                .frame(width: 90)
+                
+                // 控制点
+                let xOffset = CGFloat(rotationY / (Float.pi / 2)) * 40
+                let yOffset = CGFloat(rotationX / (Float.pi / 3)) * 40
+                
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [.cyan, .cyan.opacity(0.6)],
+                            center: .center,
+                            startRadius: 0,
+                            endRadius: 10
+                        )
+                    )
+                    .frame(width: 20, height: 20)
+                    .shadow(color: .cyan.opacity(0.6), radius: 6)
+                    .offset(x: xOffset, y: yOffset)
+            }
+            .frame(width: 100, height: 100)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        let center = CGPoint(x: 50, y: 50)
+                        let location = gesture.location
+                        
+                        // 计算相对于中心的偏移
+                        let dx = location.x - center.x
+                        let dy = location.y - center.y
+                        
+                        // 限制在圆形范围内
+                        let maxRadius: CGFloat = 40
+                        let distance = sqrt(dx * dx + dy * dy)
+                        let clampedDistance = min(distance, maxRadius)
+                        let angle = atan2(dy, dx)
+                        
+                        let clampedX = cos(angle) * clampedDistance
+                        let clampedY = sin(angle) * clampedDistance
+                        
+                        // 转换为旋转值
+                        rotationY = Float(clampedX / maxRadius) * (Float.pi / 2)
+                        rotationX = Float(clampedY / maxRadius) * (Float.pi / 3)
+                    }
+            )
+            
+            // 双击重置提示
+            Text("拖动调整视角")
+                .font(.system(size: 9))
+                .foregroundColor(.white.opacity(0.4))
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.black.opacity(0.6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                )
+        )
     }
 }
 
