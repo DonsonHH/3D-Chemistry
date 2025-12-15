@@ -27,17 +27,17 @@ class PhysicsMoleculeScene {
     // MARK: - 物理参数
     struct PhysicsConfig {
         static let atomMass: CGFloat = 1.0          // 原子质量
-        static let bondStiffness: CGFloat = 80.0    // 化学键弹簧刚度（增强）
-        static let bondDamping: CGFloat = 5.0       // 化学键阻尼（增强以减少振荡）
-        static let angleStiffness: Float = 25.0     // 键角弹簧刚度
-        static let angleDamping: Float = 3.0        // 键角阻尼
+        static let bondStiffness: CGFloat = 100.0   // 化学键弹簧刚度（增强）
+        static let bondDamping: CGFloat = 15.0      // 化学键阻尼（大幅增强）
+        static let angleStiffness: Float = 40.0     // 键角弹簧刚度（增强）
+        static let angleDamping: Float = 8.0        // 键角阻尼（大幅增强）
         static let attractionStrength: Float = 2.0  // 可成键原子间吸引力
         static let repulsionStrength: Float = 0.3   // 原子间排斥力强度（降低）
         static let gravity: SCNVector3 = SCNVector3(0, 0, 0)  // 无重力（分子漂浮）
-        static let airFriction: CGFloat = 0.5       // 空气阻力（增强以稳定）
-        static let restitution: CGFloat = 0.3       // 弹性碰撞系数（降低）
-        static let physicsUpdateInterval: Int = 3   // 每N帧更新一次物理（优化性能）
-        static let bondCheckInterval: Int = 6       // 成键检测间隔（进一步降频）
+        static let airFriction: CGFloat = 0.8       // 空气阻力（大幅增强）
+        static let restitution: CGFloat = 0.1       // 弹性碰撞系数（降低）
+        static let physicsUpdateInterval: Int = 2   // 每N帧更新一次物理
+        static let bondCheckInterval: Int = 6       // 成键检测间隔
     }
     
     // MARK: - 化学键结构
@@ -45,25 +45,28 @@ class PhysicsMoleculeScene {
         let atomNode1: SCNNode
         let atomNode2: SCNNode
         let idealLength: Float
-        let cylinderNode: SCNNode
+        let bondOrder: Int  // 键级：1=单键, 2=双键, 3=三键
+        let cylinderNodes: [SCNNode]  // 多个圆柱体用于显示双键/三键
         
         static func == (lhs: ChemicalBond, rhs: ChemicalBond) -> Bool {
             return lhs.atomNode1 === rhs.atomNode1 && lhs.atomNode2 === rhs.atomNode2
         }
     }
     
-    // 键角平面记忆结构（用于稳定分子构型）
-    struct AnglePlaneMemory {
-        let centerNode: SCNNode
-        var planeNormal: SCNVector3  // 键角平面的法向量
-        var isEstablished: Bool = false  // 是否已建立稳定的平面
+    // 分子几何构型类型
+    enum MolecularGeometry {
+        case linear         // 线性 (180°, sp杂化)
+        case trigonalPlanar // 平面三角形 (120°, sp²杂化)
+        case tetrahedral    // 四面体 (109.5°, sp³杂化)
+        case bentSp3        // 弯曲型 sp³ (如H₂O, ~104.5°)
+        case pyramidal      // 三角锥形 (如NH₃, ~107°)
     }
     
     private var bonds: [ChemicalBond] = []
     private var atomNodes: [SCNNode] = []
-    private var bondCounts: [Int] = []  // 每个原子当前的成键数
+    private var bondCounts: [Int] = []  // 每个原子当前的成键数（按电子对计算，双键计为2）
     private var frameCounter: Int = 0   // 帧计数器（用于优化）
-    private var anglePlaneMemories: [ObjectIdentifier: AnglePlaneMemory] = [:]  // 记忆每个中心原子的键角平面
+    private var atomBondOrders: [[Int: Int]] = []  // 每个原子与其他原子之间的键级 [原子索引][邻居索引] = 键级
     weak var scene: SCNScene?
     
     // MARK: - 创建物理场景
@@ -101,10 +104,11 @@ class PhysicsMoleculeScene {
             MoleculeScene.addBondingHoles(to: atomNode, atomIndex: index, maxBonds: maxBonds, atomRadius: atom.radius, selectedHoleIndex: selectedHoleIndex)
         }
         
-        // 初始化成键计数
+        // 初始化成键计数和键级记录
         manager.bondCounts = Array(repeating: 0, count: atoms.count)
+        manager.atomBondOrders = Array(repeating: [:], count: atoms.count)
         
-        // 创建手动键（使用物理约束）
+        // 创建手动键（使用物理约束）- 手动键默认为单键
         var manualBondedPairs = Set<String>()
         for manualBond in manualBonds {
             let i = manualBond.atomIndex1
@@ -115,19 +119,22 @@ class PhysicsMoleculeScene {
             let nodeA = manager.atomNodes[i]
             let nodeB = manager.atomNodes[j]
             
-            let idealLength = elementLib.getIdealBondLength(between: atoms[i].element, and: atoms[j].element)
+            let idealLength = elementLib.getIdealBondLength(between: atoms[i].element, and: atoms[j].element, bondOrder: 1)
             
             // 创建化学键视觉效果和物理约束
             manager.createBondWithPhysics(
                 nodeA: nodeA,
                 nodeB: nodeB,
                 idealLength: idealLength,
+                bondOrder: 1,
                 color: .cyan,
                 scene: scene
             )
             
             manager.bondCounts[i] += 1
             manager.bondCounts[j] += 1
+            manager.atomBondOrders[i][j] = 1
+            manager.atomBondOrders[j][i] = 1
             
             let key = i < j ? "\(i)-\(j)" : "\(j)-\(i)"
             manualBondedPairs.insert(key)
@@ -141,7 +148,7 @@ class PhysicsMoleculeScene {
             }
         }
         
-        // 自动判断键
+        // 自动判断键（支持多重键）
         for i in 0..<atoms.count {
             for j in (i+1)..<atoms.count {
                 let key = "\(i)-\(j)"
@@ -154,29 +161,46 @@ class PhysicsMoleculeScene {
                 let elementA = a.element
                 let elementB = b.element
                 
-                let canForm = elementLib.canFormBond(
-                    between: elementA,
-                    and: elementB,
-                    currentBonds1: manager.bondCounts[i],
-                    currentBonds2: manager.bondCounts[j]
+                // 计算剩余成键能力
+                let maxBonds1 = elementLib.getMaxBonds(for: elementA)
+                let maxBonds2 = elementLib.getMaxBonds(for: elementB)
+                let remainingBonds1 = maxBonds1 - manager.bondCounts[i]
+                let remainingBonds2 = maxBonds2 - manager.bondCounts[j]
+                
+                guard remainingBonds1 > 0 && remainingBonds2 > 0 else { continue }
+                
+                // 计算应该形成的键级
+                let bondOrder = elementLib.calculateBondOrder(
+                    element1: elementA,
+                    element2: elementB,
+                    remainingBonds1: remainingBonds1,
+                    remainingBonds2: remainingBonds2
                 )
-                guard canForm else { continue }
                 
-                guard elementLib.isValidBondDistance(distance, between: elementA, and: elementB) else { continue }
+                guard bondOrder > 0 else { continue }
                 
-                let idealLength = elementLib.getIdealBondLength(between: elementA, and: elementB)
+                // 根据键级获取理想键长
+                let idealLength = elementLib.getIdealBondLength(between: elementA, and: elementB, bondOrder: bondOrder)
+                
+                // 验证距离是否在合理范围（对于双键三键，允许更短的距离）
+                let bondLengthTolerance: Float = bondOrder > 1 ? 1.5 : 1.3
+                guard distance <= idealLength * bondLengthTolerance else { continue }
                 
                 // 创建化学键（带物理约束）
                 manager.createBondWithPhysics(
                     nodeA: manager.atomNodes[i],
                     nodeB: manager.atomNodes[j],
                     idealLength: idealLength,
+                    bondOrder: bondOrder,
                     color: .lightGray,
                     scene: scene
                 )
                 
-                manager.bondCounts[i] += 1
-                manager.bondCounts[j] += 1
+                // 更新成键计数（双键计为2，三键计为3）
+                manager.bondCounts[i] += bondOrder
+                manager.bondCounts[j] += bondOrder
+                manager.atomBondOrders[i][j] = bondOrder
+                manager.atomBondOrders[j][i] = bondOrder
             }
         }
         
@@ -620,10 +644,10 @@ class PhysicsMoleculeScene {
         // 添加物理属性
         let physicsBody = SCNPhysicsBody(type: .dynamic, shape: SCNPhysicsShape(geometry: sphere, options: nil))
         physicsBody.mass = PhysicsConfig.atomMass
-        physicsBody.friction = 0.5
-        physicsBody.restitution = PhysicsConfig.restitution
-        physicsBody.damping = PhysicsConfig.airFriction
-        physicsBody.angularDamping = 0.5
+        physicsBody.friction = 1.0  // 最大摩擦
+        physicsBody.restitution = 0.0  // 无弹性
+        physicsBody.damping = 0.95  // 接近最大线性阻尼
+        physicsBody.angularDamping = 0.99  // 接近最大角阻尼
         
         // 碰撞类别设置
         physicsBody.categoryBitMask = 1  // 原子类别
@@ -637,29 +661,111 @@ class PhysicsMoleculeScene {
     
     // MARK: - 创建带物理约束的化学键
     
-    private func createBondWithPhysics(nodeA: SCNNode, nodeB: SCNNode, idealLength: Float, color: SceneColor, scene: SCNScene) {
-        // 创建视觉圆柱体
-        let cylinderNode = MoleculeScene.cylinderBetweenPoints(
-            pointA: nodeA.position,
-            pointB: nodeB.position,
-            radius: 0.08,
-            color: color
-        )
-        scene.rootNode.addChildNode(cylinderNode)
+    private func createBondWithPhysics(nodeA: SCNNode, nodeB: SCNNode, idealLength: Float, bondOrder: Int = 1, color: SceneColor, scene: SCNScene) {
+        // 根据键级创建不同数量的圆柱体
+        var cylinderNodes: [SCNNode] = []
         
-        // 创建物理约束（距离约束 + 弹簧效果）
-        // 使用 SCNPhysicsSliderJoint 或自定义弹簧力
+        let posA = nodeA.position
+        let posB = nodeB.position
         
-        // 方法1：使用物理弹簧场
-        // 这里我们使用一个自定义的方法：在每帧更新中应用弹簧力
+        if bondOrder == 1 {
+            // 单键：一个圆柱体
+            let cylinderNode = MoleculeScene.cylinderBetweenPoints(
+                pointA: posA,
+                pointB: posB,
+                radius: 0.08,
+                color: color
+            )
+            scene.rootNode.addChildNode(cylinderNode)
+            cylinderNodes.append(cylinderNode)
+        } else if bondOrder == 2 {
+            // 双键：两个平行圆柱体
+            let offset: Float = 0.06  // 双键间距
+            let (offsetVec1, offsetVec2) = calculateBondOffsets(posA: posA, posB: posB, offset: offset)
+            
+            let cylinder1 = MoleculeScene.cylinderBetweenPoints(
+                pointA: SCNVector3(posA.x + offsetVec1.x, posA.y + offsetVec1.y, posA.z + offsetVec1.z),
+                pointB: SCNVector3(posB.x + offsetVec1.x, posB.y + offsetVec1.y, posB.z + offsetVec1.z),
+                radius: 0.06,
+                color: color
+            )
+            let cylinder2 = MoleculeScene.cylinderBetweenPoints(
+                pointA: SCNVector3(posA.x + offsetVec2.x, posA.y + offsetVec2.y, posA.z + offsetVec2.z),
+                pointB: SCNVector3(posB.x + offsetVec2.x, posB.y + offsetVec2.y, posB.z + offsetVec2.z),
+                radius: 0.06,
+                color: color
+            )
+            scene.rootNode.addChildNode(cylinder1)
+            scene.rootNode.addChildNode(cylinder2)
+            cylinderNodes.append(cylinder1)
+            cylinderNodes.append(cylinder2)
+        } else if bondOrder == 3 {
+            // 三键：三个圆柱体
+            let offset: Float = 0.07
+            let (offsetVec1, offsetVec2) = calculateBondOffsets(posA: posA, posB: posB, offset: offset)
+            
+            // 中心键
+            let cylinderCenter = MoleculeScene.cylinderBetweenPoints(
+                pointA: posA,
+                pointB: posB,
+                radius: 0.05,
+                color: color
+            )
+            // 两侧键
+            let cylinder1 = MoleculeScene.cylinderBetweenPoints(
+                pointA: SCNVector3(posA.x + offsetVec1.x, posA.y + offsetVec1.y, posA.z + offsetVec1.z),
+                pointB: SCNVector3(posB.x + offsetVec1.x, posB.y + offsetVec1.y, posB.z + offsetVec1.z),
+                radius: 0.05,
+                color: color
+            )
+            let cylinder2 = MoleculeScene.cylinderBetweenPoints(
+                pointA: SCNVector3(posA.x + offsetVec2.x, posA.y + offsetVec2.y, posA.z + offsetVec2.z),
+                pointB: SCNVector3(posB.x + offsetVec2.x, posB.y + offsetVec2.y, posB.z + offsetVec2.z),
+                radius: 0.05,
+                color: color
+            )
+            scene.rootNode.addChildNode(cylinderCenter)
+            scene.rootNode.addChildNode(cylinder1)
+            scene.rootNode.addChildNode(cylinder2)
+            cylinderNodes.append(cylinderCenter)
+            cylinderNodes.append(cylinder1)
+            cylinderNodes.append(cylinder2)
+        }
         
         let bond = ChemicalBond(
             atomNode1: nodeA,
             atomNode2: nodeB,
             idealLength: idealLength,
-            cylinderNode: cylinderNode
+            bondOrder: bondOrder,
+            cylinderNodes: cylinderNodes
         )
         bonds.append(bond)
+    }
+    
+    /// 计算双键/三键的偏移向量
+    private func calculateBondOffsets(posA: SCNVector3, posB: SCNVector3, offset: Float) -> (SCNVector3, SCNVector3) {
+        let dx = posB.x - posA.x
+        let dy = posB.y - posA.y
+        let dz = posB.z - posA.z
+        
+        // 键的方向向量
+        let bondDir = normalize(SCNVector3(dx, dy, dz))
+        
+        // 找一个垂直于键方向的向量
+        var perpVec: SCNVector3
+        if abs(bondDir.y) < 0.9 {
+            // 使用 (0, 1, 0) 作为参考
+            perpVec = cross(bondDir, SCNVector3(0, 1, 0))
+        } else {
+            // 如果键接近垂直，使用 (1, 0, 0)
+            perpVec = cross(bondDir, SCNVector3(1, 0, 0))
+        }
+        perpVec = normalize(perpVec)
+        
+        let offsetVec1 = SCNVector3(perpVec.x * offset, perpVec.y * offset, perpVec.z * offset)
+        let offsetVec2 = SCNVector3(-perpVec.x * offset, -perpVec.y * offset, -perpVec.z * offset)
+        
+        return (offsetVec1, offsetVec2)
     }
     
     // MARK: - 物理更新（每帧调用）
@@ -674,7 +780,7 @@ class PhysicsMoleculeScene {
         
         // 物理力计算可以降频执行以优化性能
         if frameCounter % PhysicsConfig.physicsUpdateInterval == 0 {
-            // 更新化学键的弹簧力
+            // 更新化学键的弹簧力（增强多重键的刚度）
             for bond in bonds {
                 applySpringForce(bond: bond)
             }
@@ -695,11 +801,11 @@ class PhysicsMoleculeScene {
     private func applyAngleConstraints() {
         let elementLib = ElementLibrary.shared
         
-        // 找出每个原子连接的所有键
-        var atomBonds: [SCNNode: [ChemicalBond]] = [:]
+        // 找出每个原子连接的所有键及键级
+        var atomBonds: [SCNNode: [(bond: ChemicalBond, bondOrder: Int)]] = [:]
         for bond in bonds {
-            atomBonds[bond.atomNode1, default: []].append(bond)
-            atomBonds[bond.atomNode2, default: []].append(bond)
+            atomBonds[bond.atomNode1, default: []].append((bond, bond.bondOrder))
+            atomBonds[bond.atomNode2, default: []].append((bond, bond.bondOrder))
         }
         
         // 对每个有多个键的原子应用键角约束
@@ -707,31 +813,133 @@ class PhysicsMoleculeScene {
             guard connectedBonds.count >= 2 else { continue }
             
             let centerElement = extractElement(from: centerNode)
-            let idealAngle = elementLib.getIdealBondAngle(centerElement: centerElement, bondCount: connectedBonds.count)
+            
+            // 检查是否有多重键（影响杂化类型）
+            let hasMultipleBond = connectedBonds.contains { $0.bondOrder > 1 }
+            
+            // 根据邻居数量和键级确定理想键角
+            let neighborCount = connectedBonds.count
+            let idealAngle = elementLib.getIdealBondAngleForConfiguration(
+                centerElement: centerElement,
+                neighborCount: neighborCount,
+                hasMultipleBond: hasMultipleBond
+            )
             
             // 获取连接的邻居原子
-            var neighbors: [SCNNode] = []
-            for bond in connectedBonds {
-                let neighbor = bond.atomNode1 === centerNode ? bond.atomNode2 : bond.atomNode1
-                neighbors.append(neighbor)
+            var neighbors: [(node: SCNNode, bondOrder: Int)] = []
+            for bondInfo in connectedBonds {
+                let neighbor = bondInfo.bond.atomNode1 === centerNode ? bondInfo.bond.atomNode2 : bondInfo.bond.atomNode1
+                neighbors.append((neighbor, bondInfo.bondOrder))
             }
             
-            // 对每对邻居应用角度约束
-            for i in 0..<neighbors.count {
-                for j in (i+1)..<neighbors.count {
-                    applyAngleForce(
+            // 判断分子几何类型
+            let geometry = determineGeometry(neighborCount: neighborCount, hasMultipleBond: hasMultipleBond, centerElement: centerElement)
+            
+            // 根据几何类型应用不同的约束策略
+            switch geometry {
+            case .linear:
+                // 线性分子（如 CO₂）：强制 180 度角
+                if neighbors.count == 2 {
+                    applyLinearConstraint(
                         centerNode: centerNode,
-                        neighbor1: neighbors[i],
-                        neighbor2: neighbors[j],
+                        neighbor1: neighbors[0].node,
+                        neighbor2: neighbors[1].node
+                    )
+                }
+                
+            case .trigonalPlanar:
+                // 平面三角形（如 BH₃, C=C双键周围）：所有角度 120 度，且在同一平面
+                applyPlanarConstraint(
+                    centerNode: centerNode,
+                    neighbors: neighbors.map { $0.node },
+                    idealAngle: idealAngle
+                )
+                
+            case .bentSp3:
+                // 弯曲型分子（如 H₂O, H₂S）：使用专门的弯曲约束
+                if neighbors.count == 2 {
+                    applyBentConstraint(
+                        centerNode: centerNode,
+                        neighbor1: neighbors[0].node,
+                        neighbor2: neighbors[1].node,
                         idealAngle: idealAngle
                     )
+                } else {
+                    // 多于2个邻居时使用通用角度约束
+                    for i in 0..<neighbors.count {
+                        for j in (i+1)..<neighbors.count {
+                            applyAngleForce(
+                                centerNode: centerNode,
+                                neighbor1: neighbors[i].node,
+                                neighbor2: neighbors[j].node,
+                                idealAngle: idealAngle,
+                                geometry: geometry
+                            )
+                        }
+                    }
+                }
+                
+            case .tetrahedral, .pyramidal:
+                // 四面体或三角锥：使用原有的角度约束
+                for i in 0..<neighbors.count {
+                    for j in (i+1)..<neighbors.count {
+                        applyAngleForce(
+                            centerNode: centerNode,
+                            neighbor1: neighbors[i].node,
+                            neighbor2: neighbors[j].node,
+                            idealAngle: idealAngle,
+                            geometry: geometry
+                        )
+                    }
                 }
             }
         }
     }
     
-    /// 计算并应用键角力（带平面稳定性）
-    private func applyAngleForce(centerNode: SCNNode, neighbor1: SCNNode, neighbor2: SCNNode, idealAngle: Float) {
+    /// 判断分子几何类型
+    private func determineGeometry(neighborCount: Int, hasMultipleBond: Bool, centerElement: String) -> MolecularGeometry {
+        let element = centerElement.lowercased()
+        
+        // 2个邻居
+        if neighborCount == 2 {
+            // 氧和硫：弯曲型（sp³杂化，有孤对电子）
+            // 这是 H₂O, H₂S 等分子的情况
+            if element == "o" || element == "s" {
+                // 只有当有多重键时才可能是线性（如 CO₂ 中的碳两边各有一个氧）
+                // 但如果氧是中心原子且有2个邻居，一定是弯曲型
+                return .bentSp3
+            }
+            
+            // 碳、氮等：如果有多重键，是线性（sp杂化）
+            if hasMultipleBond {
+                // 如 CO₂ (O=C=O), HCN (H-C≡N)
+                return .linear
+            }
+            
+            // 默认2邻居无多重键：弯曲或线性取决于元素
+            // 大多数情况下没有孤对电子的是线性
+            return .linear
+        }
+        
+        // 3个邻居
+        if neighborCount == 3 {
+            if hasMultipleBond || element == "b" {
+                // 有双键或硼：平面三角形
+                return .trigonalPlanar
+            }
+            if element == "n" || element == "p" {
+                // 氮、磷：三角锥形（有一对孤对电子）
+                return .pyramidal
+            }
+            return .trigonalPlanar
+        }
+        
+        // 4个或更多邻居：四面体
+        return .tetrahedral
+    }
+    
+    /// 线性分子约束（强制 180 度）
+    private func applyLinearConstraint(centerNode: SCNNode, neighbor1: SCNNode, neighbor2: SCNNode) {
         guard let centerBody = centerNode.physicsBody,
               let body1 = neighbor1.physicsBody,
               let body2 = neighbor2.physicsBody else { return }
@@ -753,231 +961,240 @@ class PhysicsMoleculeScene {
         let n1 = SCNVector3(v1.x/len1, v1.y/len1, v1.z/len1)
         let n2 = SCNVector3(v2.x/len2, v2.y/len2, v2.z/len2)
         
-        // 计算当前角度（点积）
+        // 对于线性分子，两个向量应该反向（点积 = -1）
+        // 计算偏离程度
         let dotProduct = n1.x*n2.x + n1.y*n2.y + n1.z*n2.z
-        let clampedDot = max(-1.0, min(1.0, dotProduct))
-        let currentAngle = acos(clampedDot)
         
-        // 计算当前平面的法向量（叉积）
-        var currentNormal = SCNVector3(
-            n1.y * n2.z - n1.z * n2.y,
-            n1.z * n2.x - n1.x * n2.z,
-            n1.x * n2.y - n1.y * n2.x
-        )
-        let normalLen = sqrt(currentNormal.x*currentNormal.x + currentNormal.y*currentNormal.y + currentNormal.z*currentNormal.z)
+        // 理想情况 dotProduct = -1（180度）
+        // 偏离量 = dotProduct - (-1) = dotProduct + 1
+        let deviation = dotProduct + 1.0  // 越接近0越好
         
-        guard normalLen > 0.001 else { return }
+        if abs(deviation) < 0.01 { return }  // 已经足够直了
         
-        currentNormal = SCNVector3(currentNormal.x/normalLen, currentNormal.y/normalLen, currentNormal.z/normalLen)
+        // 强力约束：将两个原子推向共线位置
+        let linearStrength: Float = PhysicsConfig.angleStiffness * 3.0  // 线性分子使用更强的约束
         
-        // 获取或创建平面记忆
-        let nodeId = ObjectIdentifier(centerNode)
-        var memory = anglePlaneMemories[nodeId]
+        // 找到理想位置：neighbor2 应该在 centerNode 相对于 neighbor1 的反方向
+        let idealDir2 = SCNVector3(-n1.x, -n1.y, -n1.z)
         
-        if memory == nil {
-            // 首次建立平面记忆
-            memory = AnglePlaneMemory(centerNode: centerNode, planeNormal: currentNormal, isEstablished: false)
-        }
-        
-        // 检查是否需要建立稳定平面（角度接近理想值时锁定）
-        let angleDiff = currentAngle - idealAngle
-        if !memory!.isEstablished && abs(angleDiff) < 0.1 {  // 约 5.7 度内锁定
-            memory!.planeNormal = currentNormal
-            memory!.isEstablished = true
-        }
-        
-        // 使用记忆的平面法向量（如果已建立）
-        var nNormal = memory!.isEstablished ? memory!.planeNormal : currentNormal
-        
-        // 检查当前法向量是否翻转了（点积为负说明在平面另一侧）
-        var needsPlaneRestoration = false
-        if memory!.isEstablished {
-            let dotWithMemory = currentNormal.x * memory!.planeNormal.x +
-                               currentNormal.y * memory!.planeNormal.y +
-                               currentNormal.z * memory!.planeNormal.z
-            
-            if dotWithMemory < 0 {
-                // 原子试图穿过平面，施加强烈的恢复力
-                needsPlaneRestoration = true
-                applyPlaneRestorationForce(
-                    centerNode: centerNode,
-                    neighbor1: neighbor1,
-                    neighbor2: neighbor2,
-                    body1: body1,
-                    body2: body2,
-                    centerBody: centerBody,
-                    memoryNormal: memory!.planeNormal,
-                    currentNormal: currentNormal,
-                    len1: len1,
-                    len2: len2,
-                    n1: n1,
-                    n2: n2
-                )
-                // 使用记忆的法向量来计算角度力（不是当前翻转的法向量）
-                nNormal = memory!.planeNormal
-            } else {
-                // 缓慢更新记忆（允许整体旋转但保持稳定）
-                let blendFactor: Float = 0.01
-                memory!.planeNormal = SCNVector3(
-                    memory!.planeNormal.x * (1 - blendFactor) + currentNormal.x * blendFactor,
-                    memory!.planeNormal.y * (1 - blendFactor) + currentNormal.y * blendFactor,
-                    memory!.planeNormal.z * (1 - blendFactor) + currentNormal.z * blendFactor
-                )
-                // 重新归一化
-                let memLen = sqrt(memory!.planeNormal.x*memory!.planeNormal.x +
-                                 memory!.planeNormal.y*memory!.planeNormal.y +
-                                 memory!.planeNormal.z*memory!.planeNormal.z)
-                if memLen > 0.001 {
-                    memory!.planeNormal = SCNVector3(
-                        memory!.planeNormal.x/memLen,
-                        memory!.planeNormal.y/memLen,
-                        memory!.planeNormal.z/memLen
-                    )
-                }
-            }
-        }
-        
-        // 保存记忆
-        anglePlaneMemories[nodeId] = memory
-        
-        // 始终施加角度约束力（恢复时使用更强的力）
-        let angleStrengthMultiplier: Float = needsPlaneRestoration ? 2.0 : 1.0
-        
-        // 如果角度接近正确且不需要恢复，不施加角度力
-        if abs(angleDiff) <= 0.02 && !needsPlaneRestoration { return }  // 约 1 度容差
-        
-        // 力的大小（扭矩转换为切向力），恢复时加强
-        let torqueMag = PhysicsConfig.angleStiffness * angleDiff * angleStrengthMultiplier
-        
-        // 对 neighbor1：力垂直于 v1 且在角度平面内
-        let tan1 = SCNVector3(
-            nNormal.y * n1.z - nNormal.z * n1.y,
-            nNormal.z * n1.x - nNormal.x * n1.z,
-            nNormal.x * n1.y - nNormal.y * n1.x
+        // 计算 neighbor2 当前方向与理想方向的差异
+        let correction2 = SCNVector3(
+            (idealDir2.x - n2.x) * linearStrength,
+            (idealDir2.y - n2.y) * linearStrength,
+            (idealDir2.z - n2.z) * linearStrength
         )
         
-        // 对 neighbor2：力垂直于 v2 且在角度平面内
-        let tan2 = SCNVector3(
-            nNormal.y * n2.z - nNormal.z * n2.y,
-            nNormal.z * n2.x - nNormal.x * n2.z,
-            nNormal.x * n2.y - nNormal.y * n2.x
+        // 类似地，neighbor1 应该在 centerNode 相对于 neighbor2 的反方向
+        let idealDir1 = SCNVector3(-n2.x, -n2.y, -n2.z)
+        let correction1 = SCNVector3(
+            (idealDir1.x - n1.x) * linearStrength,
+            (idealDir1.y - n1.y) * linearStrength,
+            (idealDir1.z - n1.z) * linearStrength
         )
         
-        // 根据角度是太大还是太小决定力的方向
-        let sign: Float = angleDiff > 0 ? -1.0 : 1.0
+        body1.applyForce(correction1, asImpulse: false)
+        body2.applyForce(correction2, asImpulse: false)
         
-        // 应用力（F = τ / r）
-        let forceMag1 = sign * torqueMag / len1
-        let forceMag2 = -sign * torqueMag / len2
-        
-        let force1 = SCNVector3(tan1.x * forceMag1, tan1.y * forceMag1, tan1.z * forceMag1)
-        let force2 = SCNVector3(tan2.x * forceMag2, tan2.y * forceMag2, tan2.z * forceMag2)
-        
-        // 中心原子受到反作用力
-        let forceCenter = SCNVector3(
-            -(force1.x + force2.x),
-            -(force1.y + force2.y),
-            -(force1.z + force2.z)
+        // 中心原子受到反作用力，保持在中间
+        let centerCorrection = SCNVector3(
+            -(correction1.x + correction2.x) * 0.5,
+            -(correction1.y + correction2.y) * 0.5,
+            -(correction1.z + correction2.z) * 0.5
         )
+        centerBody.applyForce(centerCorrection, asImpulse: false)
         
-        body1.applyForce(force1, asImpulse: false)
-        body2.applyForce(force2, asImpulse: false)
-        centerBody.applyForce(forceCenter, asImpulse: false)
+        // 添加强阻尼以稳定
+        applyLinearDamping(body1: body1, body2: body2, n1: n1, n2: n2)
+    }
+    
+    /// 线性分子的阻尼
+    private func applyLinearDamping(body1: SCNPhysicsBody, body2: SCNPhysicsBody, n1: SCNVector3, n2: SCNVector3) {
+        let dampingStrength: Float = PhysicsConfig.angleDamping * 2.0
         
-        // 添加角度阻尼（减少振荡）
+        // 计算垂直于键轴的速度分量并阻尼
         let vel1 = body1.velocity
         let vel2 = body2.velocity
         
-        // 沿切向的速度分量
-        let tangentVel1 = vel1.x*tan1.x + vel1.y*tan1.y + vel1.z*tan1.z
-        let tangentVel2 = vel2.x*tan2.x + vel2.y*tan2.y + vel2.z*tan2.z
-        
+        // 对于 body1，阻尼掉垂直于 n1 的速度分量
+        let velAlongN1 = vel1.x*n1.x + vel1.y*n1.y + vel1.z*n1.z
+        let velPerp1 = SCNVector3(
+            vel1.x - n1.x * velAlongN1,
+            vel1.y - n1.y * velAlongN1,
+            vel1.z - n1.z * velAlongN1
+        )
         let damp1 = SCNVector3(
-            -tan1.x * tangentVel1 * PhysicsConfig.angleDamping,
-            -tan1.y * tangentVel1 * PhysicsConfig.angleDamping,
-            -tan1.z * tangentVel1 * PhysicsConfig.angleDamping
+            -velPerp1.x * dampingStrength,
+            -velPerp1.y * dampingStrength,
+            -velPerp1.z * dampingStrength
+        )
+        
+        let velAlongN2 = vel2.x*n2.x + vel2.y*n2.y + vel2.z*n2.z
+        let velPerp2 = SCNVector3(
+            vel2.x - n2.x * velAlongN2,
+            vel2.y - n2.y * velAlongN2,
+            vel2.z - n2.z * velAlongN2
         )
         let damp2 = SCNVector3(
-            -tan2.x * tangentVel2 * PhysicsConfig.angleDamping,
-            -tan2.y * tangentVel2 * PhysicsConfig.angleDamping,
-            -tan2.z * tangentVel2 * PhysicsConfig.angleDamping
+            -velPerp2.x * dampingStrength,
+            -velPerp2.y * dampingStrength,
+            -velPerp2.z * dampingStrength
         )
         
         body1.applyForce(damp1, asImpulse: false)
         body2.applyForce(damp2, asImpulse: false)
     }
     
-    /// 当原子试图穿过键角平面时，施加恢复力
-    private func applyPlaneRestorationForce(
-        centerNode: SCNNode,
-        neighbor1: SCNNode,
-        neighbor2: SCNNode,
-        body1: SCNPhysicsBody,
-        body2: SCNPhysicsBody,
-        centerBody: SCNPhysicsBody,
-        memoryNormal: SCNVector3,
-        currentNormal: SCNVector3,
-        len1: Float,
-        len2: Float,
-        n1: SCNVector3,
-        n2: SCNVector3
-    ) {
-        // 计算每个邻居原子相对于平面的位置
-        // 使用记忆的法向量作为参考
-        
-        // 对于每个邻居，计算其在法向量方向上的分量
-        // 如果在错误的一侧，推回去
-        
-        let restorationStrength: Float = PhysicsConfig.angleStiffness * 2.0
-        
-        // neighbor1 在法向量方向的分量
-        let proj1 = n1.x * memoryNormal.x + n1.y * memoryNormal.y + n1.z * memoryNormal.z
-        // neighbor2 在法向量方向的分量
-        let proj2 = n2.x * memoryNormal.x + n2.y * memoryNormal.y + n2.z * memoryNormal.z
-        
-        // 如果两个原子在平面的同一侧（符号相同），一切正常
-        // 如果在不同侧，或者整体翻转了，需要恢复
-        
-        // 施加力把原子推回平面的正确一侧
-        // 力沿法向量方向，强度与偏离程度成正比
-        
-        let force1Normal = SCNVector3(
-            -memoryNormal.x * proj1 * restorationStrength,
-            -memoryNormal.y * proj1 * restorationStrength,
-            -memoryNormal.z * proj1 * restorationStrength
+    /// 弯曲分子约束（如 H₂O，使用简单直接的角度约束）
+    private func applyBentConstraint(centerNode: SCNNode, neighbor1: SCNNode, neighbor2: SCNNode, idealAngle: Float) {
+        // 直接使用通用的角度约束，强度稍高
+        applyAngleForce(
+            centerNode: centerNode,
+            neighbor1: neighbor1,
+            neighbor2: neighbor2,
+            idealAngle: idealAngle,
+            geometry: .bentSp3
         )
+    }
+    
+    /// 平面三角形约束
+    private func applyPlanarConstraint(centerNode: SCNNode, neighbors: [SCNNode], idealAngle: Float) {
+        guard neighbors.count >= 2 else { return }
         
-        let force2Normal = SCNVector3(
-            -memoryNormal.x * proj2 * restorationStrength,
-            -memoryNormal.y * proj2 * restorationStrength,
-            -memoryNormal.z * proj2 * restorationStrength
-        )
+        // 对每对邻居应用角度约束
+        for i in 0..<neighbors.count {
+            for j in (i+1)..<neighbors.count {
+                applyAngleForce(
+                    centerNode: centerNode,
+                    neighbor1: neighbors[i],
+                    neighbor2: neighbors[j],
+                    idealAngle: idealAngle,
+                    geometry: .trigonalPlanar
+                )
+            }
+        }
         
-        body1.applyForce(force1Normal, asImpulse: false)
-        body2.applyForce(force2Normal, asImpulse: false)
+        // 如果有3个邻居，额外施加平面约束
+        if neighbors.count == 3 {
+            applyPlanarityForce(centerNode: centerNode, neighbors: neighbors)
+        }
+    }
+    
+    /// 强制三个邻居保持在同一平面
+    private func applyPlanarityForce(centerNode: SCNNode, neighbors: [SCNNode]) {
+        guard neighbors.count == 3 else { return }
+        guard let body0 = neighbors[0].physicsBody,
+              let body1 = neighbors[1].physicsBody,
+              let body2 = neighbors[2].physicsBody else { return }
         
-        // 强阻尼：减少法向量方向的速度
+        let centerPos = centerNode.presentation.position
+        let pos0 = neighbors[0].presentation.position
+        let pos1 = neighbors[1].presentation.position
+        let pos2 = neighbors[2].presentation.position
+        
+        // 计算从中心到三个邻居的向量
+        let v0 = SCNVector3(pos0.x - centerPos.x, pos0.y - centerPos.y, pos0.z - centerPos.z)
+        let v1 = SCNVector3(pos1.x - centerPos.x, pos1.y - centerPos.y, pos1.z - centerPos.z)
+        let v2 = SCNVector3(pos2.x - centerPos.x, pos2.y - centerPos.y, pos2.z - centerPos.z)
+        
+        // 计算平面法向量（使用前两个向量的叉积）
+        let planeNormal = normalize(cross(v0, v1))
+        
+        // 计算第三个原子到平面的距离
+        let distToPlane = v2.x * planeNormal.x + v2.y * planeNormal.y + v2.z * planeNormal.z
+        
+        // 如果距离太大，施加力将第三个原子拉回平面
+        if abs(distToPlane) > 0.01 {
+            let planarityStrength: Float = PhysicsConfig.angleStiffness * 0.5
+            let force = SCNVector3(
+                -planeNormal.x * distToPlane * planarityStrength,
+                -planeNormal.y * distToPlane * planarityStrength,
+                -planeNormal.z * distToPlane * planarityStrength
+            )
+            body2.applyForce(force, asImpulse: false)
+        }
+    }
+    
+    /// 计算并应用键角力（使用简单的位置约束方法）
+    private func applyAngleForce(centerNode: SCNNode, neighbor1: SCNNode, neighbor2: SCNNode, idealAngle: Float, geometry: MolecularGeometry = .tetrahedral) {
+        guard let centerBody = centerNode.physicsBody,
+              let body1 = neighbor1.physicsBody,
+              let body2 = neighbor2.physicsBody else { return }
+        
+        let centerPos = centerNode.presentation.position
+        let pos1 = neighbor1.presentation.position
+        let pos2 = neighbor2.presentation.position
+        
+        // 计算从中心到两个邻居的向量
+        let v1 = SCNVector3(pos1.x - centerPos.x, pos1.y - centerPos.y, pos1.z - centerPos.z)
+        let v2 = SCNVector3(pos2.x - centerPos.x, pos2.y - centerPos.y, pos2.z - centerPos.z)
+        
+        let len1 = sqrt(v1.x*v1.x + v1.y*v1.y + v1.z*v1.z)
+        let len2 = sqrt(v2.x*v2.x + v2.y*v2.y + v2.z*v2.z)
+        
+        guard len1 > 0.001, len2 > 0.001 else { return }
+        
+        // 归一化向量
+        let n1 = SCNVector3(v1.x/len1, v1.y/len1, v1.z/len1)
+        let n2 = SCNVector3(v2.x/len2, v2.y/len2, v2.z/len2)
+        
+        // 计算当前角度
+        let dotProduct = n1.x*n2.x + n1.y*n2.y + n1.z*n2.z
+        let clampedDot = max(-1.0, min(1.0, dotProduct))
+        let currentAngle = acos(clampedDot)
+        
+        // 如果角度已经非常接近，只施加阻尼
+        let angleDiff = currentAngle - idealAngle
+        if abs(angleDiff) < 0.02 {
+            applyStrongDamping(body1: body1, body2: body2, centerBody: centerBody)
+            return
+        }
+        
+        // 使用极简方法：直接计算邻居间应有的距离
+        // 余弦定理：d² = r1² + r2² - 2*r1*r2*cos(θ)
+        let idealNeighborDist = sqrt(len1*len1 + len2*len2 - 2*len1*len2*cos(idealAngle))
+        
+        // 当前邻居间距离
+        let dx = pos2.x - pos1.x
+        let dy = pos2.y - pos1.y
+        let dz = pos2.z - pos1.z
+        let currentNeighborDist = sqrt(dx*dx + dy*dy + dz*dz)
+        
+        guard currentNeighborDist > 0.001 else { return }
+        
+        // 计算需要的位移
+        let distError = currentNeighborDist - idealNeighborDist
+        
+        // 方向：从pos1指向pos2
+        let dirX = dx / currentNeighborDist
+        let dirY = dy / currentNeighborDist
+        let dirZ = dz / currentNeighborDist
+        
+        // 力的大小 - 使用弹簧常数
+        let forceMagnitude = PhysicsConfig.angleStiffness * distError * 0.3
+        
+        // neighbor1 朝向 neighbor2 移动（如果需要拉近）
+        let force1 = SCNVector3(dirX * forceMagnitude, dirY * forceMagnitude, dirZ * forceMagnitude)
+        let force2 = SCNVector3(-dirX * forceMagnitude, -dirY * forceMagnitude, -dirZ * forceMagnitude)
+        
+        body1.applyForce(force1, asImpulse: false)
+        body2.applyForce(force2, asImpulse: false)
+        
+        // 施加强阻尼
+        applyStrongDamping(body1: body1, body2: body2, centerBody: centerBody)
+    }
+    
+    /// 对所有相关原子施加强阻尼
+    private func applyStrongDamping(body1: SCNPhysicsBody, body2: SCNPhysicsBody, centerBody: SCNPhysicsBody) {
+        let dampingStrength: Float = PhysicsConfig.angleDamping * 1.5
+        
+        // 直接阻尼所有速度
         let vel1 = body1.velocity
         let vel2 = body2.velocity
+        let velC = centerBody.velocity
         
-        let normalVel1 = vel1.x * memoryNormal.x + vel1.y * memoryNormal.y + vel1.z * memoryNormal.z
-        let normalVel2 = vel2.x * memoryNormal.x + vel2.y * memoryNormal.y + vel2.z * memoryNormal.z
-        
-        let strongDamping: Float = PhysicsConfig.angleDamping * 3.0
-        
-        let damp1 = SCNVector3(
-            -memoryNormal.x * normalVel1 * strongDamping,
-            -memoryNormal.y * normalVel1 * strongDamping,
-            -memoryNormal.z * normalVel1 * strongDamping
-        )
-        let damp2 = SCNVector3(
-            -memoryNormal.x * normalVel2 * strongDamping,
-            -memoryNormal.y * normalVel2 * strongDamping,
-            -memoryNormal.z * normalVel2 * strongDamping
-        )
-        
-        body1.applyForce(damp1, asImpulse: false)
-        body2.applyForce(damp2, asImpulse: false)
+        body1.applyForce(SCNVector3(-vel1.x * dampingStrength, -vel1.y * dampingStrength, -vel1.z * dampingStrength), asImpulse: false)
+        body2.applyForce(SCNVector3(-vel2.x * dampingStrength, -vel2.y * dampingStrength, -vel2.z * dampingStrength), asImpulse: false)
+        centerBody.applyForce(SCNVector3(-velC.x * dampingStrength, -velC.y * dampingStrength, -velC.z * dampingStrength), asImpulse: false)
     }
     
     // MARK: - 动态成键检测
@@ -1003,30 +1220,39 @@ class PhysicsMoleculeScene {
                 let elementA = extractElement(from: nodeA)
                 let elementB = extractElement(from: nodeB)
                 
-                let idealLength = elementLib.getIdealBondLength(between: elementA, and: elementB)
-                let maxBondDist = idealLength * 1.3  // 最大成键距离
-                let minSafeDist = idealLength * 0.6  // 最小安全距离
+                // 计算剩余成键能力
+                let maxBonds1 = elementLib.getMaxBonds(for: elementA)
+                let maxBonds2 = elementLib.getMaxBonds(for: elementB)
+                let remainingBonds1 = max(0, maxBonds1 - bondCounts[i])
+                let remainingBonds2 = max(0, maxBonds2 - bondCounts[j])
+                
+                // 计算应该形成的键级
+                let potentialBondOrder = elementLib.calculateBondOrder(
+                    element1: elementA,
+                    element2: elementB,
+                    remainingBonds1: remainingBonds1,
+                    remainingBonds2: remainingBonds2
+                )
+                
+                let idealLength = elementLib.getIdealBondLength(between: elementA, and: elementB, bondOrder: max(1, potentialBondOrder))
+                let maxBondDist = idealLength * 1.4  // 最大成键距离（对多重键稍微放宽）
+                let minSafeDist = idealLength * 0.5  // 最小安全距离
                 
                 if hasBond {
                     // 已有键，只需检查是否需要断键（距离过远）
-                    if dist > idealLength * 2.0 {
+                    if dist > idealLength * 2.5 {
                         // 距离太远，断开化学键
                         removeBondInternal(between: nodeA, and: nodeB)
                     }
                     continue
                 }
                 
-                // 检查两个原子是否都还能成键
-                let canForm = elementLib.canFormBond(
-                    between: elementA,
-                    and: elementB,
-                    currentBonds1: bondCounts[i],
-                    currentBonds2: bondCounts[j]
-                )
+                // 检查是否能成键
+                let canForm = remainingBonds1 > 0 && remainingBonds2 > 0 && potentialBondOrder > 0
                 
                 if canForm && dist < maxBondDist && dist > minSafeDist {
-                    // 在成键范围内，创建新键
-                    createBondDynamic(nodeA: nodeA, nodeB: nodeB, indexA: i, indexB: j, idealLength: idealLength)
+                    // 在成键范围内，创建新键（支持多重键）
+                    createBondDynamic(nodeA: nodeA, nodeB: nodeB, indexA: i, indexB: j, idealLength: idealLength, bondOrder: potentialBondOrder)
                 } else if canForm && dist < idealLength * 2.5 && dist > maxBondDist {
                     // 在吸引范围内但还未成键，施加吸引力
                     applyAttractionForce(nodeA: nodeA, nodeB: nodeB, dist: dist, idealLength: idealLength)
@@ -1038,24 +1264,31 @@ class PhysicsMoleculeScene {
         }
     }
     
-    private func createBondDynamic(nodeA: SCNNode, nodeB: SCNNode, indexA: Int, indexB: Int, idealLength: Float) {
+    private func createBondDynamic(nodeA: SCNNode, nodeB: SCNNode, indexA: Int, indexB: Int, idealLength: Float, bondOrder: Int = 1) {
         guard let scene = scene else { return }
         
-        // 创建化学键
+        // 创建化学键（支持多重键）
         createBondWithPhysics(
             nodeA: nodeA,
             nodeB: nodeB,
             idealLength: idealLength,
+            bondOrder: bondOrder,
             color: .lightGray,
             scene: scene
         )
         
-        // 更新成键计数
+        // 更新成键计数（按键级计算）
         if indexA < bondCounts.count {
-            bondCounts[indexA] += 1
+            bondCounts[indexA] += bondOrder
         }
         if indexB < bondCounts.count {
-            bondCounts[indexB] += 1
+            bondCounts[indexB] += bondOrder
+        }
+        
+        // 记录键级
+        if indexA < atomBondOrders.count && indexB < atomBondOrders.count {
+            atomBondOrders[indexA][indexB] = bondOrder
+            atomBondOrders[indexB][indexA] = bondOrder
         }
     }
     
@@ -1072,13 +1305,21 @@ class PhysicsMoleculeScene {
             let match = (bond.atomNode1 === nodeA && bond.atomNode2 === nodeB) ||
                        (bond.atomNode1 === nodeB && bond.atomNode2 === nodeA)
             if match {
-                bond.cylinderNode.removeFromParentNode()
-                // 更新成键计数
+                // 移除所有圆柱体节点
+                for cylinderNode in bond.cylinderNodes {
+                    cylinderNode.removeFromParentNode()
+                }
+                // 更新成键计数（考虑键级）
                 if let ia = indexA, ia < bondCounts.count {
-                    bondCounts[ia] = max(0, bondCounts[ia] - 1)
+                    bondCounts[ia] = max(0, bondCounts[ia] - bond.bondOrder)
                 }
                 if let ib = indexB, ib < bondCounts.count {
-                    bondCounts[ib] = max(0, bondCounts[ib] - 1)
+                    bondCounts[ib] = max(0, bondCounts[ib] - bond.bondOrder)
+                }
+                // 清除键级记录
+                if let ia = indexA, let ib = indexB {
+                    atomBondOrders[ia][ib] = nil
+                    atomBondOrders[ib][ia] = nil
                 }
             }
             return match
@@ -1151,9 +1392,12 @@ class PhysicsMoleculeScene {
         
         guard currentLength > 0.001 else { return }
         
+        // 多重键使用更高的刚度
+        let stiffnessMultiplier = Float(bond.bondOrder)
+        
         // 弹簧力 F = -k * (x - x0)
         let displacement = currentLength - bond.idealLength
-        let forceMagnitude = Float(PhysicsConfig.bondStiffness) * displacement
+        let forceMagnitude = Float(PhysicsConfig.bondStiffness) * displacement * stiffnessMultiplier
         
         // 方向向量（归一化）
         let nx = dx / currentLength
@@ -1167,7 +1411,7 @@ class PhysicsMoleculeScene {
         bodyA.applyForce(forceA, asImpulse: false)
         bodyB.applyForce(forceB, asImpulse: false)
         
-        // 阻尼力（速度方向的阻力）
+        // 阻尼力 - 大幅增强以消除振荡
         let velA = bodyA.velocity
         let velB = bodyB.velocity
         
@@ -1177,38 +1421,31 @@ class PhysicsMoleculeScene {
         
         // 沿连接方向的相对速度
         let relVelAlongBond = relVelX * nx + relVelY * ny + relVelZ * nz
-        let dampingForce = Float(PhysicsConfig.bondDamping) * relVelAlongBond
+        let dampingForce = Float(PhysicsConfig.bondDamping) * relVelAlongBond * stiffnessMultiplier
         
         let dampA = SCNVector3(nx * dampingForce, ny * dampingForce, nz * dampingForce)
         let dampB = SCNVector3(-nx * dampingForce, -ny * dampingForce, -nz * dampingForce)
         
         bodyA.applyForce(dampA, asImpulse: false)
         bodyB.applyForce(dampB, asImpulse: false)
+        
+        // 额外的全局阻尼 - 抑制所有运动
+        let globalDamping: Float = 2.0
+        bodyA.applyForce(SCNVector3(-velA.x * globalDamping, -velA.y * globalDamping, -velA.z * globalDamping), asImpulse: false)
+        bodyB.applyForce(SCNVector3(-velB.x * globalDamping, -velB.y * globalDamping, -velB.z * globalDamping), asImpulse: false)
     }
     
     private func updateBondVisual(bond: ChemicalBond) {
-        // 更新圆柱体位置和方向
+        // 更新所有圆柱体位置和方向
         let posA = bond.atomNode1.presentation.position
         let posB = bond.atomNode2.presentation.position
         
-        // 中点
-        bond.cylinderNode.position = SCNVector3(
-            (posA.x + posB.x) / 2,
-            (posA.y + posB.y) / 2,
-            (posA.z + posB.z) / 2
-        )
-        
-        // 更新长度
         let dx = posB.x - posA.x
         let dy = posB.y - posA.y
         let dz = posB.z - posA.z
         let length = sqrt(dx*dx + dy*dy + dz*dz)
         
-        if let cylinder = bond.cylinderNode.geometry as? SCNCylinder {
-            cylinder.height = CGFloat(length)
-        }
-        
-        // 更新方向
+        // 计算方向和旋转
         let direction = SCNVector3(dx, dy, dz)
         let from = SCNVector3(0, 1, 0)
         let to = normalize(direction)
@@ -1216,13 +1453,67 @@ class PhysicsMoleculeScene {
         let dotv = dot(from, to)
         let angle = acos(max(min(dotv, 1), -1))
         
+        var rotation: SCNVector4
         if sqrt(axis.x*axis.x + axis.y*axis.y + axis.z*axis.z) < 1e-6 {
-            if dotv < 0 {
-                bond.cylinderNode.rotation = SCNVector4(1, 0, 0, Float.pi)
-            }
+            rotation = dotv < 0 ? SCNVector4(1, 0, 0, Float.pi) : SCNVector4(0, 1, 0, 0)
         } else {
             let axisN = normalize(axis)
-            bond.cylinderNode.rotation = SCNVector4(axisN.x, axisN.y, axisN.z, angle)
+            rotation = SCNVector4(axisN.x, axisN.y, axisN.z, angle)
+        }
+        
+        if bond.bondOrder == 1 {
+            // 单键：简单更新
+            guard let cylinderNode = bond.cylinderNodes.first else { return }
+            cylinderNode.position = SCNVector3(
+                (posA.x + posB.x) / 2,
+                (posA.y + posB.y) / 2,
+                (posA.z + posB.z) / 2
+            )
+            if let cylinder = cylinderNode.geometry as? SCNCylinder {
+                cylinder.height = CGFloat(length)
+            }
+            cylinderNode.rotation = rotation
+        } else {
+            // 双键/三键：更新所有圆柱体，保持偏移
+            let offset: Float = bond.bondOrder == 2 ? 0.06 : 0.07
+            let (offsetVec1, offsetVec2) = calculateBondOffsets(posA: posA, posB: posB, offset: offset)
+            
+            for (index, cylinderNode) in bond.cylinderNodes.enumerated() {
+                var cylinderPosA = posA
+                var cylinderPosB = posB
+                
+                if bond.bondOrder == 2 {
+                    // 双键：两个圆柱体分别偏移
+                    if index == 0 {
+                        cylinderPosA = SCNVector3(posA.x + offsetVec1.x, posA.y + offsetVec1.y, posA.z + offsetVec1.z)
+                        cylinderPosB = SCNVector3(posB.x + offsetVec1.x, posB.y + offsetVec1.y, posB.z + offsetVec1.z)
+                    } else {
+                        cylinderPosA = SCNVector3(posA.x + offsetVec2.x, posA.y + offsetVec2.y, posA.z + offsetVec2.z)
+                        cylinderPosB = SCNVector3(posB.x + offsetVec2.x, posB.y + offsetVec2.y, posB.z + offsetVec2.z)
+                    }
+                } else if bond.bondOrder == 3 {
+                    // 三键：中心 + 两侧
+                    if index == 0 {
+                        // 中心保持原位
+                    } else if index == 1 {
+                        cylinderPosA = SCNVector3(posA.x + offsetVec1.x, posA.y + offsetVec1.y, posA.z + offsetVec1.z)
+                        cylinderPosB = SCNVector3(posB.x + offsetVec1.x, posB.y + offsetVec1.y, posB.z + offsetVec1.z)
+                    } else {
+                        cylinderPosA = SCNVector3(posA.x + offsetVec2.x, posA.y + offsetVec2.y, posA.z + offsetVec2.z)
+                        cylinderPosB = SCNVector3(posB.x + offsetVec2.x, posB.y + offsetVec2.y, posB.z + offsetVec2.z)
+                    }
+                }
+                
+                cylinderNode.position = SCNVector3(
+                    (cylinderPosA.x + cylinderPosB.x) / 2,
+                    (cylinderPosA.y + cylinderPosB.y) / 2,
+                    (cylinderPosA.z + cylinderPosB.z) / 2
+                )
+                if let cylinder = cylinderNode.geometry as? SCNCylinder {
+                    cylinder.height = CGFloat(length)
+                }
+                cylinderNode.rotation = rotation
+            }
         }
     }
     
@@ -1268,7 +1559,10 @@ class PhysicsMoleculeScene {
             let match = (bond.atomNode1 === nodeA && bond.atomNode2 === nodeB) ||
                        (bond.atomNode1 === nodeB && bond.atomNode2 === nodeA)
             if match {
-                bond.cylinderNode.removeFromParentNode()
+                // 移除所有圆柱体节点
+                for cylinderNode in bond.cylinderNodes {
+                    cylinderNode.removeFromParentNode()
+                }
             }
             return match
         }

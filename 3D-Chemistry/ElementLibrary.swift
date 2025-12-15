@@ -252,11 +252,151 @@ class ElementLibrary {
         return currentBonds1 < maxBonds1 && currentBonds2 < maxBonds2
     }
     
-    /// 计算两个原子之间的理想键长
-    func getIdealBondLength(between element1: String, and element2: String) -> Float {
+    /// 计算两个原子之间的理想键长（考虑键级）
+    func getIdealBondLength(between element1: String, and element2: String, bondOrder: Int = 1) -> Float {
         let r1 = getCovalentRadius(for: element1)
         let r2 = getCovalentRadius(for: element2)
-        return r1 + r2
+        let baseBondLength = r1 + r2
+        
+        // 双键和三键比单键短
+        // 双键约为单键长度的 86%，三键约为 78%
+        switch bondOrder {
+        case 2:
+            return baseBondLength * 0.86
+        case 3:
+            return baseBondLength * 0.78
+        default:
+            return baseBondLength
+        }
+    }
+    
+    /// 计算两个原子间应该形成的键级
+    /// 根据各自剩余的成键能力来判断
+    func calculateBondOrder(element1: String, element2: String, remainingBonds1: Int, remainingBonds2: Int) -> Int {
+        let e1 = element1.lowercased()
+        let e2 = element2.lowercased()
+        
+        // 可用于多重键的最大数量（取较小者）
+        let maxOrder = min(remainingBonds1, remainingBonds2)
+        
+        // 限制最多为三键
+        guard maxOrder > 0 else { return 0 }
+        
+        // 特殊规则：某些元素倾向形成多重键
+        
+        // C=O 双键 (如 CO₂, C=O)
+        if (e1 == "c" && e2 == "o") || (e1 == "o" && e2 == "c") {
+            // C有4个键能力，O有2个
+            // 如果C还剩>=2，O还剩>=2，倾向成双键
+            if remainingBonds1 >= 2 && remainingBonds2 >= 2 {
+                return 2
+            }
+        }
+        
+        // C≡N 三键 (如 HCN)
+        if (e1 == "c" && e2 == "n") || (e1 == "n" && e2 == "c") {
+            if remainingBonds1 >= 3 && remainingBonds2 >= 3 {
+                return 3
+            } else if remainingBonds1 >= 2 && remainingBonds2 >= 2 {
+                return 2
+            }
+        }
+        
+        // C≡C 三键，C=C 双键
+        if e1 == "c" && e2 == "c" {
+            if remainingBonds1 >= 3 && remainingBonds2 >= 3 {
+                // 乙炔类型
+                return 3
+            } else if remainingBonds1 >= 2 && remainingBonds2 >= 2 {
+                // 乙烯类型
+                return 2
+            }
+        }
+        
+        // N≡N 三键，N=N 双键
+        if e1 == "n" && e2 == "n" {
+            if remainingBonds1 >= 3 && remainingBonds2 >= 3 {
+                return 3
+            } else if remainingBonds1 >= 2 && remainingBonds2 >= 2 {
+                return 2
+            }
+        }
+        
+        // O=O 双键
+        if e1 == "o" && e2 == "o" {
+            if remainingBonds1 >= 2 && remainingBonds2 >= 2 {
+                return 2
+            }
+        }
+        
+        // S=O, P=O 双键
+        if (e1 == "s" && e2 == "o") || (e1 == "o" && e2 == "s") ||
+           (e1 == "p" && e2 == "o") || (e1 == "o" && e2 == "p") {
+            if remainingBonds1 >= 2 && remainingBonds2 >= 2 {
+                return 2
+            }
+        }
+        
+        // 默认单键
+        return 1
+    }
+    
+    /// 根据键级获取理想键角
+    /// sp杂化（2个邻居，含多重键）= 180度
+    /// sp²杂化（3个邻居，或含双键）= 120度
+    /// sp³杂化（4个邻居，全单键）= 109.5度
+    func getIdealBondAngleForConfiguration(centerElement: String, neighborCount: Int, hasMultipleBond: Bool) -> Float {
+        let element = centerElement.lowercased()
+        
+        // 特殊情况处理
+        switch element {
+        case "c":
+            // 碳的杂化
+            if neighborCount == 2 || hasMultipleBond && neighborCount <= 2 {
+                // sp 杂化 (如 CO₂, HC≡CH)
+                return 180.0 * Float.pi / 180.0
+            } else if neighborCount == 3 || hasMultipleBond {
+                // sp² 杂化 (如 H₂C=CH₂)
+                return 120.0 * Float.pi / 180.0
+            } else {
+                // sp³ 杂化 (如 CH₄)
+                return 109.5 * Float.pi / 180.0
+            }
+            
+        case "n":
+            if neighborCount == 2 || hasMultipleBond && neighborCount <= 2 {
+                return 180.0 * Float.pi / 180.0
+            } else if neighborCount == 3 && hasMultipleBond {
+                return 120.0 * Float.pi / 180.0
+            }
+            return 107.0 * Float.pi / 180.0
+            
+        case "o":
+            // 氧通常是弯曲的，但在CO₂中是线性的
+            if neighborCount == 1 {
+                // 只有一个键（如 C=O 中的 O）
+                return 0  // 不需要角度约束
+            }
+            return 104.5 * Float.pi / 180.0
+            
+        case "s":
+            if neighborCount == 2 {
+                return 92.0 * Float.pi / 180.0
+            }
+            return 109.5 * Float.pi / 180.0
+            
+        case "b":
+            // 硼 sp² 杂化
+            return 120.0 * Float.pi / 180.0
+            
+        default:
+            if neighborCount == 2 {
+                return 180.0 * Float.pi / 180.0
+            } else if neighborCount == 3 {
+                return 120.0 * Float.pi / 180.0
+            }
+            return 109.5 * Float.pi / 180.0
+        }
     }
     
     /// 判断给定距离是否在合理的成键范围内

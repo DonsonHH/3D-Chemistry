@@ -20,21 +20,5 @@
             landmarkType = "0">
          </BreakpointContent>
       </BreakpointProxy>
-      <BreakpointProxy
-         BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
-         <BreakpointContent
-            uuid = "27577ED6-79F5-4CBD-9A87-9B63DA318BA5"
-            shouldBeEnabled = "Yes"
-            ignoreCount = "0"
-            continueAfterRunningActions = "No"
-            filePath = "3D-Chemistry/PhysicsMoleculeScene.swift"
-            startingColumnNumber = "9223372036854775807"
-            endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "748"
-            endingLineNumber = "748"
-            landmarkName = "applyAngleForce(centerNode:neighbor1:neighbor2:idealAngle:)"
-            landmarkType = "7">
-         </BreakpointContent>
-      </BreakpointProxy>
    </Breakpoints>
 </Bucket>
